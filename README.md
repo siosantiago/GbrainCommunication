@@ -38,6 +38,25 @@ npx gbrain-agent simulate --count 15
 
 Then run `npx gbrain-agent start` from another terminal on the same machine/network.
 
+## Cross-network connect
+
+When mDNS can't reach a peer (different WiFi, remote laptop), send a handshake over Primitive email:
+
+```bash
+npx gbrain-agent connect --to peer@sub.primitive.email
+```
+
+Pin the webhook port with `GBRAIN_WEBHOOK_PORT=8080`, then `ngrok http 8080` and paste the URL into your Primitive dashboard so responses route back.
+
+## Profile source
+
+On start the agent looks for, in order:
+
+1. `state/profile.json` (cached structured profile),
+2. `gbrain query` output from the local [GBrain CLI](https://gbrain.dev) (parsed by Claude into the matching schema),
+3. a 4-question interactive wizard (when no profile and no CLI),
+4. a demo profile fallback (CI / non-TTY).
+
 ## Environment
 
 - `PRIMITIVE_API_KEY` — Primitive email API key

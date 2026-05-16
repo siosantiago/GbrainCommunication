@@ -1,4 +1,6 @@
 import readline from "node:readline/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { stdin as input, stdout as output } from "node:process";
 import chalk from "chalk";
 import { AgentConfig } from "./types.js";
@@ -8,6 +10,8 @@ import { AgentLogger } from "./logger.js";
 import { renderWelcome } from "./display.js";
 
 const configFile = "config.json";
+const profileFile = "profile.json";
+const execFileAsync = promisify(execFile);
 
 export async function loadOrSetupConfig(logger: AgentLogger): Promise<AgentConfig> {
   const existing = await readJson<AgentConfig | null>(configFile, null);
@@ -82,4 +86,73 @@ function emptyFields(config: AgentConfig): Partial<AgentConfig> {
 async function secretPrompt(rl: readline.Interface, prompt: string): Promise<string> {
   const value = await rl.question(prompt);
   return value.trim();
+}
+
+export async function loadOrCreateProfile(): Promise<void> {
+  const existing = await readJson<Record<string, unknown> | null>(profileFile, null);
+  if (existing && Object.keys(existing).length > 0) {
+    return;
+  }
+  if (!process.stdin.isTTY) {
+    return;
+  }
+
+  if (await isGBrainCliInstalled()) {
+    return;
+  }
+
+  console.log("");
+  console.log(chalk.bold("Profile setup") + chalk.dim(" (used for matching — gbrain CLI not detected)"));
+  const rl = readline.createInterface({ input, output });
+  try {
+    const currentWork = (await rl.question("  What are you working on? ")).trim();
+    const skillsAnswer = (await rl.question("  Skills you can offer (comma-separated): ")).trim();
+    const needsAnswer = (await rl.question("  What are you looking for (comma-separated): ")).trim();
+    const domain = (await rl.question("  What domain or area do you care about most? ")).trim();
+
+    const skills = splitList(skillsAnswer);
+    const needs = splitList(needsAnswer);
+    const summary = [
+      currentWork && `Working on ${currentWork}.`,
+      skills.length && `Can offer ${skills.join(", ")}.`,
+      needs.length && `Looking for ${needs.join(", ")}.`,
+      domain && `Focused on ${domain}.`,
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    const profile = {
+      current_work: currentWork,
+      skills,
+      needs,
+      domain,
+      summary,
+      interests: domain ? [domain] : [],
+      projects: currentWork ? [currentWork] : [],
+      cares_about: domain ? [domain] : [],
+      _source: "wizard" as const,
+    };
+
+    await writeJson(profileFile, profile);
+    console.log(`${chalk.green("✓")} Profile saved to state/profile.json`);
+    console.log("");
+  } finally {
+    rl.close();
+  }
+}
+
+function splitList(raw: string): string[] {
+  return raw
+    .split(/[,;]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+async function isGBrainCliInstalled(): Promise<boolean> {
+  try {
+    await execFileAsync("gbrain", ["--version"], { timeout: 3_000 });
+    return true;
+  } catch {
+    return false;
+  }
 }

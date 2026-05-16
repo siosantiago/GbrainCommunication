@@ -1,5 +1,6 @@
 import chalk from "chalk";
-import { Identity, MatchResult, SandboxResult, TrustTier } from "./types.js";
+import { AgentConfig, Identity, MatchResult, SandboxResult, TrustTier } from "./types.js";
+import { ProfileSource } from "./gbrain.js";
 import { trustLabel } from "./trust.js";
 
 const width = 76;
@@ -84,4 +85,19 @@ export function renderResults(matches: MatchResult[], sandboxes: SandboxResult[]
 
 function key(value: string): string {
   return `${chalk.bgGray.white(` ${value} `)}`;
+}
+
+export function profileStatsLabel(source: ProfileSource): string {
+  if (source === "local-brain") return "(from local brain)";
+  if (source === "cached") return "(from cached profile)";
+  if (source === "wizard") return "(from wizard)";
+  if (source === "remote-api") return "(from remote API)";
+  if (source === "demo") return "(demo mode)";
+  return `(from ${source})`;
+}
+
+export function renderWebhookHint(_config: AgentConfig, port: number): void {
+  console.log(
+    `${chalk.dim("  Webhook on :")}${port}${chalk.dim(" — run ")}${chalk.cyan(`ngrok http ${port}`)}${chalk.dim(" and paste URL into Primitive dashboard")}`,
+  );
 }
