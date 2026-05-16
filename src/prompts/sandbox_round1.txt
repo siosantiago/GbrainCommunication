@@ -1,0 +1,3 @@
+Round 1: Exchange only Tier 1 anonymous capability vectors.
+State what the local agent has, what it needs, and what kind of collaboration might be safe to explore.
+Do not reveal real names, company names, private contact info, or full GBrain details.
