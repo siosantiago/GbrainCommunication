@@ -1,7 +1,7 @@
 import { decodeEncryptedBody, decryptJson, encodeEncryptedBody, encryptJson } from "./crypto.js";
 import { demoGraph } from "./gbrain.js";
 import { getTrust } from "./trust.js";
-import { DiscoveryService } from "./discovery.js";
+import { DiscoveryService, peerId as calcPeerId } from "./discovery.js";
 import { Matcher } from "./matching.js";
 import { SandboxOrchestrator } from "./sandbox.js";
 import { PrimitiveTransport } from "./transport.js";
@@ -61,6 +61,26 @@ export class Orchestrator {
     profiles[payload.fromPseudonym] = payload;
     await writeJson(profileFile, profiles);
     this.options.logger.debug(`Stored inbound Tier 1 profile from ${payload.fromPseudonym}`);
+
+    const id = calcPeerId(payload.publicKey, payload.fromEmail);
+    const peers = await readJson<Record<string, Peer>>("peers.json", {});
+    if (!peers[id]) {
+      const peer: Peer = {
+        id,
+        pseudonym: payload.fromPseudonym,
+        primitiveEmail: payload.fromEmail,
+        publicKey: payload.publicKey,
+        firstSeenAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+        source: "manual",
+      };
+      peers[id] = peer;
+      await writeJson("peers.json", peers);
+      this.options.logger.emitEvent("peer:discovered", `Inbound Tier 1 from ${peer.pseudonym}`, { peerId: id });
+      void this.handlePeer(peer).catch((err) =>
+        this.options.logger.error(`Cold-connect peer flow failed: ${(err as Error).message}`),
+      );
+    }
   }
 
   async runExistingPeers(): Promise<{ matches: MatchResult[]; sandboxes: SandboxResult[] }> {
