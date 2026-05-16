@@ -130,6 +130,7 @@ export async function loadOrCreateProfile(): Promise<void> {
       interests: domain ? [domain] : [],
       projects: currentWork ? [currentWork] : [],
       cares_about: domain ? [domain] : [],
+      _source: "wizard" as const,
     };
 
     await writeJson(profileFile, profile);

@@ -91,7 +91,9 @@ export function profileStatsLabel(source: ProfileSource): string {
   if (source === "local-brain") return "(from local brain)";
   if (source === "cached") return "(from cached profile)";
   if (source === "wizard") return "(from wizard)";
-  return "(demo mode)";
+  if (source === "remote-api") return "(from remote API)";
+  if (source === "demo") return "(demo mode)";
+  return `(from ${source})`;
 }
 
 export function renderWebhookHint(_config: AgentConfig, port: number): void {

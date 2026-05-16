@@ -61,7 +61,11 @@ export async function startAgent(options: AgentOptions & { once?: boolean }): Pr
 
   renderSetupComplete(identity, profileStatsLabel(gbrain.lastSource), config.primitiveFrom);
   renderWebhookHint(config, port);
-  await orchestrator.nudgeKnownPeers();
+  try {
+    await orchestrator.nudgeKnownPeers();
+  } catch (error) {
+    logger.error(`Known-peer nudge failed: ${(error as Error).message}`);
+  }
 
   const running: RunningAgent = {
     stop: () => {

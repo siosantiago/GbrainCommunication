@@ -8,7 +8,7 @@ import { readJson, writeJson } from "./storage.js";
 const profileFile = "profile.json";
 const execFileAsync = promisify(execFile);
 
-export type ProfileSource = "cached" | "local-brain" | "wizard" | "demo";
+export type ProfileSource = "cached" | "local-brain" | "wizard" | "remote-api" | "demo";
 
 export class GBrainClient {
   public lastSource: ProfileSource = "demo";
@@ -35,15 +35,15 @@ export class GBrainClient {
 
   async loadGraph(): Promise<KnowledgeGraph> {
     const cached = await readJson<Record<string, unknown> | null>(profileFile, null);
-    if (cached && Object.keys(cached).length > 0) {
-      this.lastSource = "cached";
-      this.logger.info("GBrain profile loaded (from cached profile)");
+    if (cached && hasMeaningfulProfileContent(cached)) {
+      this.lastSource = inferCachedSource(cached);
+      this.logger.info(`GBrain profile loaded ${labelFor(this.lastSource)}`);
       return extractGraph(cached);
     }
 
     const brainProfile = await this.queryLocalGBrain();
     if (brainProfile) {
-      await writeJson(profileFile, brainProfile);
+      await writeJson(profileFile, { ...brainProfile, _source: "local-brain" });
       this.lastSource = "local-brain";
       this.logger.info("GBrain profile loaded (from local brain)");
       return extractGraph(brainProfile);
@@ -59,8 +59,8 @@ export class GBrainClient {
         });
         if (response.ok) {
           const raw = (await response.json()) as Record<string, unknown>;
-          await writeJson(profileFile, raw);
-          this.lastSource = "local-brain";
+          await writeJson(profileFile, { ...raw, _source: "remote-api" });
+          this.lastSource = "remote-api";
           this.logger.info("GBrain profile loaded (from remote API)");
           return extractGraph(raw);
         }
@@ -164,7 +164,7 @@ function heuristicProfile(rawText: string): Record<string, unknown> {
 
 export function extractGraph(raw: Record<string, unknown>): KnowledgeGraph {
   const capabilities = vectorFrom(raw);
-  const caresAbout = listValue(raw.cares_about ?? raw.caresAbout);
+  const caresAbout = dedupe(listValue(raw.cares_about ?? raw.caresAbout));
   if (caresAbout.length) {
     capabilities.interests = dedupe([...capabilities.interests, ...caresAbout]);
   }
@@ -239,6 +239,39 @@ function dedupe(items: string[]): string[] {
     result.push(item);
   }
   return result;
+}
+
+export function hasMeaningfulProfileContent(raw: Record<string, unknown>): boolean {
+  for (const [key, value] of Object.entries(raw)) {
+    if (key.startsWith("_")) continue;
+    if (typeof value === "string" && value.trim()) return true;
+    if (Array.isArray(value) && value.some((item) => typeof item === "string" ? item.trim() : Boolean(item))) {
+      return true;
+    }
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      if (hasMeaningfulProfileContent(value as Record<string, unknown>)) return true;
+    }
+    if (typeof value === "number" || typeof value === "boolean") return true;
+  }
+  return false;
+}
+
+function inferCachedSource(raw: Record<string, unknown>): ProfileSource {
+  const marker = typeof raw._source === "string" ? raw._source : undefined;
+  if (marker === "local-brain" || marker === "wizard" || marker === "remote-api" || marker === "cached" || marker === "demo") {
+    return marker;
+  }
+  return "cached";
+}
+
+function labelFor(source: ProfileSource): string {
+  switch (source) {
+    case "local-brain": return "(from local brain)";
+    case "wizard": return "(from wizard)";
+    case "remote-api": return "(from remote API)";
+    case "cached": return "(from cached profile)";
+    case "demo": return "(demo mode)";
+  }
 }
 
 export function demoGraph(): KnowledgeGraph {

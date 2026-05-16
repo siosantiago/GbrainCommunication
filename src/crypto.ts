@@ -109,11 +109,20 @@ export function decodeHandshake(body: string): HandshakePayload | null {
   }
 
   try {
-    const parsed = JSON.parse(Buffer.from(encoded, "base64").toString("utf8")) as HandshakePayload;
-    if (parsed?.type !== "handshake" || parsed.version !== 1) {
+    const parsed = JSON.parse(
+      Buffer.from(encoded, "base64").toString("utf8"),
+    ) as Partial<HandshakePayload>;
+    if (
+      parsed?.type !== "handshake" ||
+      parsed.version !== 1 ||
+      typeof parsed.fromPseudonym !== "string" ||
+      typeof parsed.fromEmail !== "string" ||
+      typeof parsed.publicKey !== "string" ||
+      typeof parsed.sentAt !== "string"
+    ) {
       return null;
     }
-    return parsed;
+    return parsed as HandshakePayload;
   } catch {
     return null;
   }

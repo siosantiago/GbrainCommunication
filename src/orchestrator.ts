@@ -78,9 +78,10 @@ export class Orchestrator {
     await writeJson(profileFile, profiles);
     this.options.logger.debug(`Stored inbound Tier 1 profile from ${payload.fromPseudonym}`);
 
+    const senderEmail = message.from || payload.fromEmail;
     const peer = await this.upsertPeer({
       pseudonym: payload.fromPseudonym,
-      primitiveEmail: payload.fromEmail,
+      primitiveEmail: senderEmail,
       publicKey: payload.publicKey,
       source: "manual",
     });
@@ -131,9 +132,20 @@ export class Orchestrator {
       return;
     }
 
+    const senderEmail = message.from || handshake.fromEmail;
+    if (!senderEmail) {
+      this.options.logger.error("Handshake received without a usable sender email; dropping");
+      return;
+    }
+    if (handshake.fromEmail && handshake.fromEmail !== senderEmail) {
+      this.options.logger.debug(
+        `Handshake fromEmail (${handshake.fromEmail}) differs from envelope sender (${senderEmail}); trusting envelope`,
+      );
+    }
+
     const peer = await this.upsertPeer({
       pseudonym: handshake.fromPseudonym,
-      primitiveEmail: handshake.fromEmail || message.from,
+      primitiveEmail: senderEmail,
       publicKey: handshake.publicKey,
       source: "manual",
     });
@@ -186,31 +198,34 @@ export class Orchestrator {
     }
     this.activePeers.add(peer.id);
 
-    const profiles = await readJson<Record<string, TierOnePayload>>(profileFile, {});
-    const alreadyKnown = Boolean(profiles[peer.pseudonym]);
-    if (alreadyKnown) {
-      this.options.logger.info(`Already have profile for ${peer.pseudonym} — skipping Tier 1, re-scoring`);
-    } else {
-      await this.sendTierOne(peer);
-    }
-    const peerGraph = await this.loadPeerGraph(peer);
-    const trust = await getTrust(peer.id, peer.pseudonym);
-    const match = await this.options.matcher.score(peer, this.options.graph, peerGraph, trust.tier);
+    try {
+      const profiles = await readJson<Record<string, TierOnePayload>>(profileFile, {});
+      const alreadyKnown = Boolean(profiles[peer.pseudonym]);
+      if (alreadyKnown) {
+        this.options.logger.info(`Already have profile for ${peer.pseudonym} — skipping Tier 1, re-scoring`);
+      } else {
+        await this.sendTierOne(peer);
+      }
+      const peerGraph = await this.loadPeerGraph(peer);
+      const trust = await getTrust(peer.id, peer.pseudonym);
+      const match = await this.options.matcher.score(peer, this.options.graph, peerGraph, trust.tier);
 
-    let sandbox: SandboxResult | undefined;
-    if (match.score >= 70) {
-      this.totalSandboxes += 1;
-      sandbox = await this.options.sandbox.run(peer, match, this.options.graph, peerGraph);
-      this.completedSandboxes += 1;
-      this.options.logger.emitEvent(
-        "match:ready",
-        `${renderProgress(this.completedSandboxes, this.totalSandboxes)} — ${peer.pseudonym} ready`,
-        { peerId: peer.id },
-      );
-    }
+      let sandbox: SandboxResult | undefined;
+      if (match.score >= 70) {
+        this.totalSandboxes += 1;
+        sandbox = await this.options.sandbox.run(peer, match, this.options.graph, peerGraph);
+        this.completedSandboxes += 1;
+        this.options.logger.emitEvent(
+          "match:ready",
+          `${renderProgress(this.completedSandboxes, this.totalSandboxes)} — ${peer.pseudonym} ready`,
+          { peerId: peer.id },
+        );
+      }
 
-    this.activePeers.delete(peer.id);
-    return { match, sandbox };
+      return { match, sandbox };
+    } finally {
+      this.activePeers.delete(peer.id);
+    }
   }
 
   private async sendTierOne(peer: Peer): Promise<void> {
