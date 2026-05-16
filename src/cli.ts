@@ -1,9 +1,13 @@
 #!/usr/bin/env node
+import "dotenv/config";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import { startAgent } from "./index.js";
 import { startSimulation } from "./simulate.js";
 import { startInteraction } from "./interaction.js";
+import { renderDoctorReport, runDoctor, summarize } from "./doctor.js";
+import { loadConfigSafe } from "./setup.js";
+import { renderResetReport, resetState } from "./reset.js";
 
 void yargs(hideBin(process.argv))
   .scriptName("gbrain-agent")
@@ -26,12 +30,36 @@ void yargs(hideBin(process.argv))
           type: "boolean",
           default: false,
           describe: "Process existing peers once and exit (useful for smoke tests)",
+        })
+        .option("pace", {
+          type: "string",
+          describe:
+            "Demo pacing: 'demo' (default for live demos), 'slow', or a millisecond delay between rounds",
+        })
+        .option("skip-doctor", {
+          type: "boolean",
+          default: false,
+          describe: "Skip preflight diagnostics before starting",
         }),
     async (argv) => {
+      if (!argv["skip-doctor"]) {
+        const config = await loadConfigSafe();
+        const checks = await runDoctor({ config, skipNetwork: true });
+        const { failures } = summarize(checks);
+        if (failures > 0) {
+          renderDoctorReport(checks);
+          console.error(
+            "Preflight checks failed. Re-run `npx gbrain-agent doctor` for details, or pass --skip-doctor to bypass.",
+          );
+          process.exit(1);
+        }
+      }
+
       const running = await startAgent({
         silent: Boolean(argv.silent),
         logs: Boolean(argv.logs),
         once: Boolean(argv.once),
+        pace: typeof argv.pace === "string" ? argv.pace : undefined,
       });
       if (argv.once) {
         return;
@@ -101,6 +129,49 @@ void yargs(hideBin(process.argv))
       process.once("SIGTERM", () => {
         running.stop();
         process.exit(0);
+      });
+    },
+  )
+  .command(
+    "doctor",
+    "Run preflight diagnostics for the demo",
+    (builder) =>
+      builder.option("skip-network", {
+        type: "boolean",
+        default: false,
+        describe: "Skip mDNS + GBrain reachability probes (faster, fewer false positives offline)",
+      }),
+    async (argv) => {
+      const config = await loadConfigSafe();
+      const checks = await runDoctor({ config, skipNetwork: Boolean(argv["skip-network"]) });
+      renderDoctorReport(checks);
+      const { failures } = summarize(checks);
+      process.exit(failures > 0 ? 1 : 0);
+    },
+  )
+  .command(
+    "reset",
+    "Clear cached state (matches, sandboxes, peers) so the next run is fresh",
+    (builder) =>
+      builder
+        .option("keep-identity", {
+          type: "boolean",
+          default: true,
+          describe: "Keep pseudonym and crypto keypair (default true)",
+        })
+        .option("keep-config", {
+          type: "boolean",
+          default: true,
+          describe: "Keep saved API key configuration (default true)",
+        }),
+    async (argv) => {
+      const removed = await resetState({
+        keepIdentity: Boolean(argv["keep-identity"]),
+        keepConfig: Boolean(argv["keep-config"]),
+      });
+      renderResetReport(removed, {
+        keepIdentity: Boolean(argv["keep-identity"]),
+        keepConfig: Boolean(argv["keep-config"]),
       });
     },
   )

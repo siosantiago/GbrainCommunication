@@ -2,8 +2,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import { KnowledgeGraph, MatchResult, Peer, TrustTier } from "./types.js";
 import { AgentLogger } from "./logger.js";
 import { readJson, writeJson } from "./storage.js";
+import { safeParseJson } from "./jsonParse.js";
 
 const matchesFile = "matches.json";
+const LLM_TIMEOUT_MS = 25_000;
 
 export class Matcher {
   private readonly anthropic?: Anthropic;
@@ -23,9 +25,17 @@ export class Matcher {
       return cached[peer.id];
     }
 
-    const result = this.anthropic
-      ? await this.scoreWithClaude(peer, myGraph, peerGraph, trustTier)
-      : this.scoreLocally(peer, myGraph, peerGraph, trustTier);
+    let result: MatchResult;
+    if (this.anthropic) {
+      try {
+        result = await this.scoreWithClaude(peer, myGraph, peerGraph, trustTier);
+      } catch (error) {
+        this.logger.error(`Match scoring via Claude failed, using local fallback: ${(error as Error).message}`);
+        result = this.scoreLocally(peer, myGraph, peerGraph, trustTier);
+      }
+    } else {
+      result = this.scoreLocally(peer, myGraph, peerGraph, trustTier);
+    }
 
     cached[peer.id] = result;
     await writeJson(matchesFile, cached);
@@ -48,18 +58,24 @@ export class Matcher {
       `Person B (${peer.pseudonym}): ${JSON.stringify(peerGraph)}`,
     ].join("\n");
 
-    const response = await this.anthropic!.messages.create({
-      model: "claude-3-5-sonnet-latest",
-      max_tokens: 900,
-      temperature: 0.2,
-      messages: [{ role: "user", content: prompt }],
-    });
+    const response = await this.anthropic!.messages.create(
+      {
+        model: "claude-3-5-sonnet-latest",
+        max_tokens: 900,
+        temperature: 0.2,
+        messages: [{ role: "user", content: prompt }],
+      },
+      { timeout: LLM_TIMEOUT_MS },
+    );
 
     const text = response.content
       .map((block) => ("text" in block ? block.text : ""))
       .join("")
       .trim();
-    const parsed = JSON.parse(text.replace(/^```json\s*/i, "").replace(/```$/i, "")) as Partial<MatchResult>;
+    const parsed = safeParseJson<Partial<MatchResult>>(text);
+    if (!parsed) {
+      throw new Error("Claude response did not contain parseable JSON");
+    }
     return normalizeMatch(peer, parsed, trustTier);
   }
 

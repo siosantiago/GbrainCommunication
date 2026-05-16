@@ -16,8 +16,11 @@ Run one command and your local agent:
 ```bash
 npm install
 npm run build
+npx gbrain-agent doctor      # preflight: API keys, ports, mDNS, state dir
 npx gbrain-agent start
 ```
+
+`start` automatically runs the preflight checks first and aborts on hard failures. Use `--skip-doctor` if you intentionally want to skip them, or `doctor --skip-network` to run only the local checks.
 
 For local smoke tests without real credentials, run in a non-interactive shell or set demo values:
 
@@ -36,7 +39,55 @@ Spawn simulated agents that advertise on the local network:
 npx gbrain-agent simulate --count 15
 ```
 
-Then run `npx gbrain-agent start` from another terminal on the same machine/network.
+Then run `npx gbrain-agent start --pace demo` from another terminal on the same machine/network.
+
+### Make the demo "cook"
+
+By default the agent runs at full speed — useful for tests, but the live activity stream flashes by in under a second. For live demos, pace the orchestrator so events are visible:
+
+```bash
+npx gbrain-agent start --pace demo   # 1.4s between rounds, 0.7s between peers
+npx gbrain-agent start --pace slow   # 2.4s between rounds, 1.2s between peers
+npx gbrain-agent start --pace 2000   # custom: 2s between rounds + peers
+```
+
+Pacing only inserts dwell between visible events; it never blocks Primitive sends or LLM calls.
+
+### Reset between runs
+
+The agent caches matches, sandboxes, and discovered peers under `state/`. For a fresh demo, clear it:
+
+```bash
+npx gbrain-agent reset                    # keeps identity + config (default)
+npx gbrain-agent reset --no-keep-identity # also rotates the pseudonym/keypair
+npx gbrain-agent reset --no-keep-config   # also forgets stored API keys
+```
+
+## Troubleshooting
+
+If the demo misbehaves, run the doctor first:
+
+```bash
+npx gbrain-agent doctor
+```
+
+It reports on:
+
+- Node.js runtime (>= 20)
+- Primitive API key + sender (warns on demo/example values)
+- GBrain API key (warns on demo keys; live ping if a real key is present)
+- Anthropic key shape
+- `state/` directory writability
+- Webhook port availability (only if `GBRAIN_WEBHOOK_PORT` is pinned)
+- mDNS / Bonjour publish capability
+
+Common fixes:
+
+- **Doctor reports port in use** — another agent is still running, or pick a different `GBRAIN_WEBHOOK_PORT`.
+- **mDNS warning on a VM / locked-down network** — multicast is blocked. Use `simulate` on the same host and run `start` from a sibling shell.
+- **`Claude response did not contain parseable JSON`** — the agent now logs the failure and falls back to the local deterministic matcher/brief, so the demo continues. Re-run `reset` and try again with a fresh prompt.
+- **Demo too fast / nothing visible** — add `--pace demo`.
+- **Repeat run shows nothing new** — `npx gbrain-agent reset`, then re-run.
 
 ## Cross-network connect
 

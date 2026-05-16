@@ -3,8 +3,11 @@ import { CollaborationBrief, KnowledgeGraph, MatchResult, Peer, SandboxResult } 
 import { AgentLogger } from "./logger.js";
 import { readJson, writeJson } from "./storage.js";
 import { PrimitiveTransport } from "./transport.js";
+import { Pacer } from "./pacing.js";
+import { safeParseJson } from "./jsonParse.js";
 
 const sandboxesFile = "sandboxes.json";
+const LLM_TIMEOUT_MS = 30_000;
 
 export class SandboxOrchestrator {
   private readonly anthropic?: Anthropic;
@@ -13,6 +16,7 @@ export class SandboxOrchestrator {
     apiKey: string | undefined,
     private readonly transport: PrimitiveTransport,
     private readonly logger: AgentLogger,
+    private readonly pacer: Pacer = new Pacer(),
   ) {
     if (apiKey && !apiKey.startsWith("demo_")) {
       this.anthropic = new Anthropic({ apiKey });
@@ -46,12 +50,19 @@ export class SandboxOrchestrator {
         response,
         completedAt: new Date().toISOString(),
       });
-      await this.transport.send({
-        to: peer.primitiveEmail,
-        subject: `[GBrain ${peer.pseudonym}] sandbox round ${round}/3`,
-        bodyText: response,
-        wait: true,
-      });
+      try {
+        await this.transport.send({
+          to: peer.primitiveEmail,
+          subject: `[GBrain ${peer.pseudonym}] sandbox round ${round}/3`,
+          bodyText: response,
+          wait: true,
+        });
+      } catch (error) {
+        this.logger.error(`Sandbox round ${round} delivery to ${peer.pseudonym} failed: ${(error as Error).message}`);
+      }
+      if (round < 3) {
+        await this.pacer.betweenRounds();
+      }
     }
 
     const brief = await this.generateBrief(match, myGraph, peerGraph, rounds.map((round) => round.response));
@@ -87,24 +98,37 @@ export class SandboxOrchestrator {
       ].join("\n");
     }
 
-    const response = await this.anthropic.messages.create({
-      model: "claude-3-5-sonnet-latest",
-      max_tokens: 700,
-      temperature: 0.3,
-      messages: [
+    try {
+      const response = await this.anthropic.messages.create(
         {
-          role: "user",
-          content: [
-            "Write a concise agent-to-agent Primitive email sandbox message.",
-            prompt,
-            `Match: ${JSON.stringify(match)}`,
-            `Local graph: ${JSON.stringify(myGraph)}`,
-            `Peer graph: ${JSON.stringify(peerGraph)}`,
-          ].join("\n"),
+          model: "claude-3-5-sonnet-latest",
+          max_tokens: 700,
+          temperature: 0.3,
+          messages: [
+            {
+              role: "user",
+              content: [
+                "Write a concise agent-to-agent Primitive email sandbox message.",
+                prompt,
+                `Match: ${JSON.stringify(match)}`,
+                `Local graph: ${JSON.stringify(myGraph)}`,
+                `Peer graph: ${JSON.stringify(peerGraph)}`,
+              ].join("\n"),
+            },
+          ],
         },
-      ],
-    });
-    return response.content.map((block) => ("text" in block ? block.text : "")).join("\n");
+        { timeout: LLM_TIMEOUT_MS },
+      );
+      return response.content.map((block) => ("text" in block ? block.text : "")).join("\n");
+    } catch (error) {
+      this.logger.error(`Claude round generation failed, using local fallback: ${(error as Error).message}`);
+      return [
+        prompt,
+        `Local agent offers: ${myGraph.capabilities.offers.join(", ")}.`,
+        `Peer offers: ${peerGraph.capabilities.offers.join(", ")}.`,
+        `Collaboration direction: ${match.collaboration}.`,
+      ].join("\n");
+    }
   }
 
   private async generateBrief(
@@ -114,40 +138,54 @@ export class SandboxOrchestrator {
     roundResponses: string[],
   ): Promise<CollaborationBrief> {
     if (!this.anthropic) {
-      return {
-        title: match.collaboration,
-        whatWeWouldBuild: `A hackathon collaboration around ${match.collaboration}.`,
-        eachContributes: [
-          `You: ${myGraph.capabilities.offers.slice(0, 3).join(", ")}`,
-          `Them: ${peerGraph.capabilities.offers.slice(0, 3).join(", ")}`,
-        ],
-        eachGets: [
-          `You get help with ${myGraph.capabilities.needs.slice(0, 2).join(", ")}`,
-          `They get help with ${peerGraph.capabilities.needs.slice(0, 2).join(", ")}`,
-        ],
-        nonObviousConnections: match.reasons.slice(0, 3),
-      };
+      return this.localBrief(match, myGraph, peerGraph);
     }
 
-    const response = await this.anthropic.messages.create({
-      model: "claude-3-5-sonnet-latest",
-      max_tokens: 900,
-      temperature: 0.2,
-      messages: [
+    try {
+      const response = await this.anthropic.messages.create(
         {
-          role: "user",
-          content: [
-            "Return only JSON for a collaboration brief with keys title, whatWeWouldBuild, eachContributes array, eachGets array, nonObviousConnections array.",
-            `Match: ${JSON.stringify(match)}`,
-            `Local graph: ${JSON.stringify(myGraph)}`,
-            `Peer graph: ${JSON.stringify(peerGraph)}`,
-            `Rounds: ${JSON.stringify(roundResponses)}`,
-          ].join("\n"),
+          model: "claude-3-5-sonnet-latest",
+          max_tokens: 900,
+          temperature: 0.2,
+          messages: [
+            {
+              role: "user",
+              content: [
+                "Return only JSON for a collaboration brief with keys title, whatWeWouldBuild, eachContributes array, eachGets array, nonObviousConnections array.",
+                `Match: ${JSON.stringify(match)}`,
+                `Local graph: ${JSON.stringify(myGraph)}`,
+                `Peer graph: ${JSON.stringify(peerGraph)}`,
+                `Rounds: ${JSON.stringify(roundResponses)}`,
+              ].join("\n"),
+            },
+          ],
         },
+        { timeout: LLM_TIMEOUT_MS },
+      );
+      const text = response.content.map((block) => ("text" in block ? block.text : "")).join("");
+      const parsed = safeParseJson<CollaborationBrief>(text);
+      if (parsed) return parsed;
+      this.logger.error("Claude brief response was not valid JSON, using local fallback");
+    } catch (error) {
+      this.logger.error(`Claude brief generation failed, using local fallback: ${(error as Error).message}`);
+    }
+    return this.localBrief(match, myGraph, peerGraph);
+  }
+
+  private localBrief(match: MatchResult, myGraph: KnowledgeGraph, peerGraph: KnowledgeGraph): CollaborationBrief {
+    return {
+      title: match.collaboration,
+      whatWeWouldBuild: `A hackathon collaboration around ${match.collaboration}.`,
+      eachContributes: [
+        `You: ${myGraph.capabilities.offers.slice(0, 3).join(", ")}`,
+        `Them: ${peerGraph.capabilities.offers.slice(0, 3).join(", ")}`,
       ],
-    });
-    const text = response.content.map((block) => ("text" in block ? block.text : "")).join("");
-    return JSON.parse(text.replace(/^```json\s*/i, "").replace(/```$/i, "")) as CollaborationBrief;
+      eachGets: [
+        `You get help with ${myGraph.capabilities.needs.slice(0, 2).join(", ")}`,
+        `They get help with ${peerGraph.capabilities.needs.slice(0, 2).join(", ")}`,
+      ],
+      nonObviousConnections: match.reasons.slice(0, 3),
+    };
   }
 }
 
