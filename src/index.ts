@@ -12,6 +12,7 @@ import { SandboxOrchestrator } from "./sandbox.js";
 import { Orchestrator } from "./orchestrator.js";
 import { profileStatsLabel, renderSetupComplete, renderWebhookHint } from "./display.js";
 import { AgentOptions } from "./types.js";
+import { Pacer, pacingFromFlag } from "./pacing.js";
 
 export interface RunningAgent {
   stop: () => void;
@@ -20,7 +21,12 @@ export interface RunningAgent {
   nudgeKnownPeers: Orchestrator["nudgeKnownPeers"];
 }
 
-export async function startAgent(options: AgentOptions & { once?: boolean }): Promise<RunningAgent> {
+export interface StartAgentOptions extends AgentOptions {
+  once?: boolean;
+  pace?: string | number;
+}
+
+export async function startAgent(options: StartAgentOptions): Promise<RunningAgent> {
   const logger = createLogger(options);
   const config = await loadOrSetupConfig(logger);
   await loadOrCreateProfile();
@@ -31,8 +37,9 @@ export async function startAgent(options: AgentOptions & { once?: boolean }): Pr
   const webhook = new PrimitiveWebhookServer(config, logger);
   const port = await webhook.start();
   const transport = new PrimitiveTransport(config, logger);
+  const pacer: Pacer = pacingFromFlag(options.pace);
   const matcher = new Matcher(config.anthropicApiKey, logger);
-  const sandbox = new SandboxOrchestrator(config.anthropicApiKey, transport, logger);
+  const sandbox = new SandboxOrchestrator(config.anthropicApiKey, transport, logger, pacer);
   const discovery = new DiscoveryService({
     identity,
     primitiveEmail: config.primitiveFrom,
@@ -51,6 +58,7 @@ export async function startAgent(options: AgentOptions & { once?: boolean }): Pr
     sandbox,
     logger,
     silent: options.silent,
+    pacer,
   });
 
   webhook.on("message", (message) => {

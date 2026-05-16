@@ -14,6 +14,7 @@ import { Matcher } from "./matching.js";
 import { SandboxOrchestrator } from "./sandbox.js";
 import { PrimitiveTransport } from "./transport.js";
 import { AgentLogger } from "./logger.js";
+import { Pacer } from "./pacing.js";
 import {
   AgentConfig,
   CryptoIdentity,
@@ -43,14 +44,19 @@ export interface OrchestratorOptions {
   sandbox: SandboxOrchestrator;
   logger: AgentLogger;
   silent: boolean;
+  pacer?: Pacer;
 }
 
 export class Orchestrator {
   private readonly activePeers = new Set<string>();
+  private readonly completedPeers = new Set<string>();
   private completedSandboxes = 0;
   private totalSandboxes = 0;
+  private readonly pacer: Pacer;
 
-  constructor(private readonly options: OrchestratorOptions) {}
+  constructor(private readonly options: OrchestratorOptions) {
+    this.pacer = options.pacer ?? new Pacer();
+  }
 
   start(): void {
     this.options.discovery.on("peer", (peer: Peer) => {
@@ -183,7 +189,16 @@ export class Orchestrator {
 
   async runExistingPeers(): Promise<{ matches: MatchResult[]; sandboxes: SandboxResult[] }> {
     const peers = await readJson<Record<string, Peer>>("peers.json", {});
-    const results = await Promise.all(Object.values(peers).map((peer) => this.handlePeer(peer)));
+    const results: Array<{ match: MatchResult; sandbox?: SandboxResult } | null> = [];
+    for (const peer of Object.values(peers)) {
+      try {
+        const result = await this.handlePeer(peer);
+        results.push(result);
+      } catch (error) {
+        this.options.logger.error(`Failed to handle peer ${peer.pseudonym}: ${(error as Error).message}`);
+      }
+      await this.pacer.betweenPeers();
+    }
     const matches = results.map((result) => result?.match).filter(Boolean) as MatchResult[];
     const sandboxes = results.map((result) => result?.sandbox).filter(Boolean) as SandboxResult[];
     if (matches.length) {
@@ -193,7 +208,7 @@ export class Orchestrator {
   }
 
   private async handlePeer(peer: Peer): Promise<{ match: MatchResult; sandbox?: SandboxResult } | null> {
-    if (this.activePeers.has(peer.id)) {
+    if (this.activePeers.has(peer.id) || this.completedPeers.has(peer.id)) {
       return null;
     }
     this.activePeers.add(peer.id);
@@ -206,9 +221,11 @@ export class Orchestrator {
       } else {
         await this.sendTierOne(peer);
       }
+      await this.pacer.perEvent();
       const peerGraph = await this.loadPeerGraph(peer);
       const trust = await getTrust(peer.id, peer.pseudonym);
       const match = await this.options.matcher.score(peer, this.options.graph, peerGraph, trust.tier);
+      await this.pacer.perEvent();
 
       let sandbox: SandboxResult | undefined;
       if (match.score >= 70) {
@@ -222,6 +239,7 @@ export class Orchestrator {
         );
       }
 
+      this.completedPeers.add(peer.id);
       return { match, sandbox };
     } finally {
       this.activePeers.delete(peer.id);

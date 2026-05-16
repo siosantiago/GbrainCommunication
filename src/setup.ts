@@ -13,6 +13,20 @@ const configFile = "config.json";
 const profileFile = "profile.json";
 const execFileAsync = promisify(execFile);
 
+export async function loadConfigSafe(): Promise<AgentConfig> {
+  const existing = await readJson<AgentConfig | null>(configFile, null);
+  const fromEnv = configFromEnv();
+  return {
+    gbrainApiKey: fromEnv.gbrainApiKey || existing?.gbrainApiKey || "",
+    primitiveApiKey: fromEnv.primitiveApiKey || existing?.primitiveApiKey || "",
+    primitiveWebhookSecret: fromEnv.primitiveWebhookSecret ?? existing?.primitiveWebhookSecret,
+    primitiveFrom: fromEnv.primitiveFrom || existing?.primitiveFrom || "",
+    anthropicApiKey: fromEnv.anthropicApiKey ?? existing?.anthropicApiKey,
+    gbrainBaseUrl: fromEnv.gbrainBaseUrl ?? existing?.gbrainBaseUrl,
+    webhookPort: fromEnv.webhookPort ?? existing?.webhookPort,
+  };
+}
+
 export async function loadOrSetupConfig(logger: AgentLogger): Promise<AgentConfig> {
   const existing = await readJson<AgentConfig | null>(configFile, null);
   const fromEnv = configFromEnv();
