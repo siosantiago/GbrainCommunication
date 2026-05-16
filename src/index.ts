@@ -18,6 +18,7 @@ export interface RunningAgent {
   runExistingPeers: Orchestrator["runExistingPeers"];
   connectTo: Orchestrator["connectTo"];
   nudgeKnownPeers: Orchestrator["nudgeKnownPeers"];
+  requestTrustUpgrade: Orchestrator["requestTrustUpgrade"];
 }
 
 export async function startAgent(options: AgentOptions & { once?: boolean }): Promise<RunningAgent> {
@@ -53,8 +54,10 @@ export async function startAgent(options: AgentOptions & { once?: boolean }): Pr
     silent: options.silent,
   });
 
-  webhook.on("message", (message) => {
-    void orchestrator.handleInbound(message).catch((error) => logger.error(`Inbound message failed: ${(error as Error).message}`));
+  webhook.on("email", (email) => {
+    void orchestrator
+      .handleInbound(email)
+      .catch((error) => logger.error(`Inbound email failed: ${(error as Error).message}`));
   });
   orchestrator.start();
   await discovery.start();
@@ -75,6 +78,7 @@ export async function startAgent(options: AgentOptions & { once?: boolean }): Pr
     runExistingPeers: () => orchestrator.runExistingPeers(),
     connectTo: (email) => orchestrator.connectTo(email),
     nudgeKnownPeers: () => orchestrator.nudgeKnownPeers(),
+    requestTrustUpgrade: (peerId, tier) => orchestrator.requestTrustUpgrade(peerId, tier),
   };
 
   if (options.once) {

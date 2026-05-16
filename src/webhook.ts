@@ -1,7 +1,14 @@
 import { EventEmitter } from "node:events";
 import express from "express";
-import { handleWebhook, PrimitiveWebhookError } from "@primitivedotdev/sdk";
-import { AgentConfig, PrimitiveMessage } from "./types.js";
+import {
+  handleWebhook,
+  isEmailReceivedEvent,
+  normalizeReceivedEmail,
+  parseWebhookEvent,
+  PrimitiveWebhookError,
+  ReceivedEmail,
+} from "@primitivedotdev/sdk";
+import { AgentConfig } from "./types.js";
 import { AgentLogger } from "./logger.js";
 
 export class PrimitiveWebhookServer extends EventEmitter {
@@ -20,20 +27,13 @@ export class PrimitiveWebhookServer extends EventEmitter {
 
     app.post("/webhooks/email", (req, res) => {
       try {
-        const event = this.config.primitiveWebhookSecret
-          ? handleWebhook({
-              body: req.body,
-              headers: req.headers,
-              secret: this.config.primitiveWebhookSecret,
-            })
-          : JSON.parse(req.body.toString("utf8"));
-
-        const message = extractMessage(event);
-        if (message) {
-          this.emit("message", message);
-          this.logger.debug(`Inbound Primitive message from ${message.from}: ${message.subject}`);
+        const email = this.parseInbound(req.body, req.headers);
+        if (email) {
+          this.emit("email", email);
+          this.logger.debug(
+            `Inbound Primitive email from ${email.sender.address}: ${email.subject ?? "(no subject)"}`,
+          );
         }
-
         res.status(200).json({ received: true });
       } catch (error) {
         if (error instanceof PrimitiveWebhookError) {
@@ -60,42 +60,22 @@ export class PrimitiveWebhookServer extends EventEmitter {
   stop(): void {
     this.server?.close();
   }
-}
 
-function extractMessage(event: unknown): PrimitiveMessage | null {
-  const value = event as {
-    id?: string;
-    email?: {
-      id?: string;
-      headers?: {
-        from?: string;
-        to?: string;
-        subject?: string;
-        message_id?: string;
-        messageId?: string;
-        in_reply_to?: string;
-        references?: string[] | string;
-      };
-      body_text?: string;
-      bodyText?: string;
-      text?: string;
-    };
-  };
+  private parseInbound(body: Buffer, headers: express.Request["headers"]): ReceivedEmail | null {
+    if (this.config.primitiveWebhookSecret) {
+      const event = handleWebhook({
+        body,
+        headers,
+        secret: this.config.primitiveWebhookSecret,
+      });
+      return normalizeReceivedEmail(event);
+    }
 
-  const email = value.email;
-  if (!email?.headers) {
-    return null;
+    const raw = JSON.parse(body.toString("utf8"));
+    const event = parseWebhookEvent(raw);
+    if (!isEmailReceivedEvent(event)) {
+      return null;
+    }
+    return normalizeReceivedEmail(event);
   }
-
-  const references = email.headers.references;
-  return {
-    id: email.id ?? value.id,
-    messageId: email.headers.message_id ?? email.headers.messageId,
-    from: email.headers.from ?? "",
-    to: email.headers.to ?? "",
-    subject: email.headers.subject ?? "",
-    bodyText: email.body_text ?? email.bodyText ?? email.text ?? "",
-    inReplyTo: email.headers.in_reply_to,
-    references: Array.isArray(references) ? references : references?.split(/\s+/),
-  };
 }

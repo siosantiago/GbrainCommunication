@@ -1,9 +1,14 @@
 import readline from "node:readline";
 import chalk from "chalk";
-import { MatchResult, SandboxResult } from "./types.js";
-import { requestUpgrade } from "./trust.js";
+import { MatchResult, SandboxResult, TrustTier } from "./types.js";
 
-export function startInteraction(matches: MatchResult[], sandboxes: SandboxResult[]): () => void {
+export type RequestTrustUpgrade = (peerId: string, tier: TrustTier) => Promise<void>;
+
+export function startInteraction(
+  matches: MatchResult[],
+  sandboxes: SandboxResult[],
+  requestTrustUpgrade: RequestTrustUpgrade,
+): () => void {
   if (!process.stdin.isTTY || !matches.length) {
     return () => undefined;
   }
@@ -19,8 +24,8 @@ export function startInteraction(matches: MatchResult[], sandboxes: SandboxResul
       process.exit(0);
     }
     if (key.name === "t") {
-      await requestUpgrade(top.peerId, top.pseudonym, 2);
-      console.log(`${chalk.green("✓")} Tier 2 upgrade request queued for ${top.pseudonym}. Mutual consent required.`);
+      await requestTrustUpgrade(top.peerId, 2);
+      console.log(`${chalk.green("✓")} Tier 2 request sent to ${top.pseudonym} via Primitive. Mutual consent required.`);
     }
     if (key.name === "r") {
       const brief = sandboxes.find((sandbox) => sandbox.peerId === top.peerId)?.brief;
@@ -31,8 +36,8 @@ export function startInteraction(matches: MatchResult[], sandboxes: SandboxResul
       }
     }
     if (key.name === "y") {
-      await requestUpgrade(top.peerId, top.pseudonym, 3);
-      console.log(`${chalk.green("✓")} Tier 3 reveal request queued for ${top.pseudonym}.`);
+      await requestTrustUpgrade(top.peerId, 3);
+      console.log(`${chalk.green("✓")} Tier 3 reveal request sent to ${top.pseudonym} via Primitive.`);
     }
     if (key.name === "p") {
       console.log(chalk.dim(`Passed on ${top.pseudonym}.`));

@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import type { ReceivedEmail } from "@primitivedotdev/sdk";
 import { CollaborationBrief, KnowledgeGraph, MatchResult, Peer, SandboxResult } from "./types.js";
 import { AgentLogger } from "./logger.js";
 import { readJson, writeJson } from "./storage.js";
@@ -19,7 +20,14 @@ export class SandboxOrchestrator {
     }
   }
 
-  async run(peer: Peer, match: MatchResult, myGraph: KnowledgeGraph, peerGraph: KnowledgeGraph): Promise<SandboxResult> {
+  async run(
+    peer: Peer,
+    match: MatchResult,
+    myGraph: KnowledgeGraph,
+    peerGraph: KnowledgeGraph,
+    myPseudonym: string,
+    inbound: ReceivedEmail | null,
+  ): Promise<SandboxResult> {
     const cached = await readJson<Record<string, SandboxResult>>(sandboxesFile, {});
     if (cached[peer.id]) {
       return cached[peer.id];
@@ -46,18 +54,31 @@ export class SandboxOrchestrator {
         response,
         completedAt: new Date().toISOString(),
       });
-      await this.transport.send({
-        to: peer.primitiveEmail,
-        subject: `[GBrain ${peer.pseudonym}] sandbox round ${round}/3`,
-        bodyText: response,
-        wait: true,
-      });
+
+      if (inbound) {
+        await this.transport.reply({
+          inbound,
+          bodyText: response,
+          wait: true,
+          fromDisplayName: myPseudonym,
+        });
+      } else {
+        await this.transport.send({
+          to: peer.primitiveEmail,
+          subject: `[GBrain ${peer.pseudonym}] sandbox round ${round}/3`,
+          bodyText: response,
+          wait: true,
+          fromDisplayName: myPseudonym,
+        });
+      }
     }
 
     const brief = await this.generateBrief(match, myGraph, peerGraph, rounds.map((round) => round.response));
     const result: SandboxResult = {
       peerId: peer.id,
       pseudonym: peer.pseudonym,
+      threadId: inbound?.thread.messageId ?? undefined,
+      messageId: inbound?.id,
       score: match.score,
       rounds,
       brief,
