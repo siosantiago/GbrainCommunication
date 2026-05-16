@@ -16,7 +16,8 @@ export async function resetState(options: ResetOptions = {}): Promise<string[]> 
   let entries: string[] = [];
   try {
     entries = await readdir(dir);
-  } catch {
+  } catch (error) {
+    console.error(`Error reading state directory ${dir}: ${(error as Error).message}`);
     return [];
   }
 

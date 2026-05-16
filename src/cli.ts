@@ -34,7 +34,7 @@ void yargs(hideBin(process.argv))
         .option("pace", {
           type: "string",
           describe:
-            "Demo pacing: 'demo' (default for live demos), 'slow', or a millisecond delay between rounds",
+            "Demo pacing: 'demo' (default for live demos), 'slow', or a millisecond delay applied between rounds and peers",
         })
         .option("skip-doctor", {
           type: "boolean",

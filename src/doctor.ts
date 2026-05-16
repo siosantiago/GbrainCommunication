@@ -180,6 +180,15 @@ async function checkWebhookPort(port?: number): Promise<DoctorCheck> {
     };
   }
 
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+    return {
+      name: "Webhook port",
+      status: "fail",
+      detail: `Invalid port ${port}`,
+      hint: "GBRAIN_WEBHOOK_PORT must be an integer between 0 and 65535.",
+    };
+  }
+
   return new Promise<DoctorCheck>((resolve) => {
     const server = createServer();
     server.once("error", (error: NodeJS.ErrnoException) => {
@@ -198,11 +207,24 @@ async function checkWebhookPort(port?: number): Promise<DoctorCheck> {
         });
       }
     });
-    server.listen({ port, host: "127.0.0.1" }, () => {
-      server.close(() => {
-        resolve({ name: "Webhook port", status: "ok", detail: `Port ${port} available` });
+    try {
+      server.listen({ port, host: "127.0.0.1" }, () => {
+        server.close(() => {
+          resolve({ name: "Webhook port", status: "ok", detail: `Port ${port} available` });
+        });
       });
-    });
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      resolve({
+        name: "Webhook port",
+        status: "fail",
+        detail: `Could not bind port ${port}: ${err.message}`,
+        hint:
+          err.code === "ERR_SOCKET_BAD_PORT"
+            ? "GBRAIN_WEBHOOK_PORT must be an integer between 0 and 65535."
+            : "Check process permissions and port availability.",
+      });
+    }
   });
 }
 

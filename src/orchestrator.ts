@@ -191,8 +191,12 @@ export class Orchestrator {
     const peers = await readJson<Record<string, Peer>>("peers.json", {});
     const results: Array<{ match: MatchResult; sandbox?: SandboxResult } | null> = [];
     for (const peer of Object.values(peers)) {
-      const result = await this.handlePeer(peer);
-      results.push(result);
+      try {
+        const result = await this.handlePeer(peer);
+        results.push(result);
+      } catch (error) {
+        this.options.logger.error(`Failed to handle peer ${peer.pseudonym}: ${(error as Error).message}`);
+      }
       await this.pacer.betweenPeers();
     }
     const matches = results.map((result) => result?.match).filter(Boolean) as MatchResult[];

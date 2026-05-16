@@ -163,9 +163,9 @@ export class SandboxOrchestrator {
         { timeout: LLM_TIMEOUT_MS },
       );
       const text = response.content.map((block) => ("text" in block ? block.text : "")).join("");
-      const parsed = safeParseJson<CollaborationBrief>(text);
-      if (parsed) return parsed;
-      this.logger.error("Claude brief response was not valid JSON, using local fallback");
+      const parsed = safeParseJson<unknown>(text);
+      if (isCollaborationBrief(parsed)) return parsed;
+      this.logger.error("Claude brief response had invalid shape, using local fallback");
     } catch (error) {
       this.logger.error(`Claude brief generation failed, using local fallback: ${(error as Error).message}`);
     }
@@ -187,6 +187,22 @@ export class SandboxOrchestrator {
       nonObviousConnections: match.reasons.slice(0, 3),
     };
   }
+}
+
+export function isCollaborationBrief(value: unknown): value is CollaborationBrief {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.title === "string" &&
+    typeof candidate.whatWeWouldBuild === "string" &&
+    isStringArray(candidate.eachContributes) &&
+    isStringArray(candidate.eachGets) &&
+    isStringArray(candidate.nonObviousConnections)
+  );
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 function roundLabel(round: 1 | 2 | 3): string {
