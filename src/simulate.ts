@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import Bonjour from "bonjour-service";
+import { Bonjour } from "bonjour-service";
 import demoProfiles from "./fixtures/demo_profiles.json" with { type: "json" };
 import { generateKeypair } from "./crypto.js";
 import { generatePseudonym } from "./identity.js";

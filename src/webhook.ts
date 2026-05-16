@@ -47,10 +47,11 @@ export class PrimitiveWebhookServer extends EventEmitter {
     });
 
     const port = this.config.webhookPort ?? 0;
-    await new Promise<void>((resolve) => {
-      this.server = app.listen(port, () => resolve());
+    const server = await new Promise<NonNullable<typeof this.server>>((resolve) => {
+      const listening = app.listen(port, () => resolve(listening));
     });
-    const address = this.server.address();
+    this.server = server;
+    const address = server.address();
     const actualPort = typeof address === "object" && address ? address.port : port;
     this.logger.debug(`Primitive webhook listening on :${actualPort}/webhooks/email`);
     return actualPort;

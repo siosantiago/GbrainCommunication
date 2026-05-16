@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import Bonjour, { Browser, Service } from "bonjour-service";
+import { Bonjour, Browser, Service } from "bonjour-service";
 import { Identity, Peer } from "./types.js";
 import { readJson, writeJson } from "./storage.js";
 import { AgentLogger } from "./logger.js";
@@ -38,8 +38,9 @@ export class DiscoveryService extends EventEmitter {
       },
     });
 
-    this.browser = this.bonjour.find({ type: "gbrain", protocol: "tcp" });
-    this.browser.on("up", (service) => {
+    const browser = this.bonjour.find({ type: "gbrain", protocol: "tcp" });
+    this.browser = browser;
+    browser.on("up", (service) => {
       void this.handleService(service).catch((error) => {
         this.options.logger.error(`Failed to process discovered service: ${(error as Error).message}`);
       });
