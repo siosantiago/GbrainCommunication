@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import nacl from "tweetnacl";
-import { CryptoIdentity } from "./types.js";
+import { CryptoIdentity, HandshakePayload } from "./types.js";
 import { readJson, writeJson } from "./storage.js";
 
 const keyFile = "crypto_identity.json";
@@ -91,4 +91,30 @@ export function decodeEncryptedBody(body: string): EncryptedPayload | null {
   }
 
   return JSON.parse(Buffer.from(encoded, "base64").toString("utf8")) as EncryptedPayload;
+}
+
+const handshakeHeader = "GBRAIN-HANDSHAKE v1";
+
+export function encodeHandshake(payload: HandshakePayload): string {
+  return [
+    handshakeHeader,
+    Buffer.from(JSON.stringify(payload), "utf8").toString("base64"),
+  ].join("\n");
+}
+
+export function decodeHandshake(body: string): HandshakePayload | null {
+  const [header, encoded] = body.trim().split(/\n/, 2);
+  if (header !== handshakeHeader || !encoded) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(Buffer.from(encoded, "base64").toString("utf8")) as HandshakePayload;
+    if (parsed?.type !== "handshake" || parsed.version !== 1) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
 }

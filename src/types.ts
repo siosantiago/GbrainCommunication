@@ -66,6 +66,7 @@ export interface KnowledgeGraph {
   companies: string[];
   problems: string[];
   searches: string[];
+  caresAbout?: string[];
   domainReveal: DomainReveal;
   fullReveal: FullReveal;
   raw?: unknown;
@@ -78,6 +79,15 @@ export interface TierOnePayload {
   fromEmail: string;
   publicKey: string;
   graph: Pick<KnowledgeGraph, "summary" | "capabilities">;
+  sentAt: string;
+}
+
+export interface HandshakePayload {
+  version: 1;
+  type: "handshake";
+  fromPseudonym: string;
+  fromEmail: string;
+  publicKey: string;
   sentAt: string;
 }
 

@@ -52,6 +52,59 @@ void yargs(hideBin(process.argv))
     },
   )
   .command(
+    "connect",
+    "Send an encrypted handshake to a peer via Primitive email",
+    (builder) =>
+      builder
+        .option("to", {
+          type: "string",
+          demandOption: true,
+          describe: "Peer Primitive email address to send the handshake to",
+        })
+        .option("silent", {
+          type: "boolean",
+          default: false,
+          describe: "Suppress live activity stream and show only final results",
+        })
+        .option("logs", {
+          type: "boolean",
+          default: false,
+          describe: "Show verbose mDNS, Primitive, and LLM diagnostics",
+        })
+        .option("wait", {
+          type: "boolean",
+          default: true,
+          describe: "Keep the agent running to receive the response via webhook",
+        }),
+    async (argv) => {
+      const running = await startAgent({
+        silent: Boolean(argv.silent),
+        logs: Boolean(argv.logs),
+      });
+      try {
+        await running.connectTo(String(argv.to));
+      } catch (error) {
+        console.error((error as Error).message);
+        running.stop();
+        process.exit(1);
+      }
+
+      if (!argv.wait) {
+        running.stop();
+        return;
+      }
+
+      process.once("SIGINT", () => {
+        running.stop();
+        process.exit(0);
+      });
+      process.once("SIGTERM", () => {
+        running.stop();
+        process.exit(0);
+      });
+    },
+  )
+  .command(
     "simulate",
     "Spawn simulated GBrain agents on the local network",
     (builder) =>
