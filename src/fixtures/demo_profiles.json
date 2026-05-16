@@ -1,0 +1,92 @@
+[
+  {
+    "slug": "swift-puma",
+    "title": "Health data compliance engineer",
+    "offers": ["medical dataset access", "HIPAA compliance", "patient workflow design"],
+    "needs": ["speech ML infrastructure", "React Native mobile app"]
+  },
+  {
+    "slug": "cool-lynx",
+    "title": "Infra founder with cloud credits",
+    "offers": ["unused AWS credits", "YC partner intro", "Kubernetes operations"],
+    "needs": ["GPU workloads", "ML advisor"]
+  },
+  {
+    "slug": "red-falcon",
+    "title": "Accessibility systems builder",
+    "offers": ["screen reader expertise", "W3C accessibility standards", "assistive tech grants"],
+    "needs": ["voice UI models", "mobile prototyping"]
+  },
+  {
+    "slug": "bright-otter",
+    "title": "B2B design partner scout",
+    "offers": ["enterprise design partners", "sales discovery scripts"],
+    "needs": ["AI demo engineering", "prototype polish"]
+  },
+  {
+    "slug": "quiet-crane",
+    "title": "Robotics perception hacker",
+    "offers": ["robotics datasets", "camera calibration", "SLAM experience"],
+    "needs": ["LLM agent planning", "mobile teleop UI"]
+  },
+  {
+    "slug": "blue-marten",
+    "title": "Education founder",
+    "offers": ["school district pilots", "learning science research"],
+    "needs": ["voice tutoring models", "privacy architecture"]
+  },
+  {
+    "slug": "amber-ibis",
+    "title": "Climate data scientist",
+    "offers": ["satellite data", "carbon markets expertise"],
+    "needs": ["agent workflow automation", "front-end visualization"]
+  },
+  {
+    "slug": "green-hawk",
+    "title": "Developer tools maintainer",
+    "offers": ["open-source distribution", "VS Code extension experience"],
+    "needs": ["LLM evals", "GPU inference budget"]
+  },
+  {
+    "slug": "silver-wolf",
+    "title": "Fintech risk operator",
+    "offers": ["fraud datasets", "banking compliance"],
+    "needs": ["graph ML", "real-time alert UI"]
+  },
+  {
+    "slug": "violet-ray",
+    "title": "Creative AI filmmaker",
+    "offers": ["video generation workflows", "creator network"],
+    "needs": ["mobile capture app", "audio transcription"]
+  },
+  {
+    "slug": "gold-tern",
+    "title": "Security engineer",
+    "offers": ["threat modeling", "SOC2 readiness", "secure enclave experience"],
+    "needs": ["agent memory audit trails", "product UI"]
+  },
+  {
+    "slug": "black-kite",
+    "title": "Marketplace growth lead",
+    "offers": ["demand generation", "community operations"],
+    "needs": ["matching algorithms", "prototype backend"]
+  },
+  {
+    "slug": "white-moth",
+    "title": "Bioinformatics researcher",
+    "offers": ["genomics datasets", "lab network"],
+    "needs": ["workflow automation", "privacy-preserving compute"]
+  },
+  {
+    "slug": "pink-fox",
+    "title": "Consumer social designer",
+    "offers": ["viral loop design", "Figma systems"],
+    "needs": ["agent orchestration", "React Native implementation"]
+  },
+  {
+    "slug": "cyan-heron",
+    "title": "Legal AI founder",
+    "offers": ["contract corpus", "legal review workflows"],
+    "needs": ["retrieval evals", "secure document ingestion"]
+  }
+]
