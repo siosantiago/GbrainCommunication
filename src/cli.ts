@@ -38,7 +38,7 @@ void yargs(hideBin(process.argv))
       }
 
       const { matches, sandboxes } = await running.runExistingPeers();
-      const cleanup = startInteraction(matches, sandboxes);
+      const cleanup = startInteraction(matches, sandboxes, running.requestTrustUpgrade);
       process.once("SIGINT", () => {
         cleanup();
         running.stop();

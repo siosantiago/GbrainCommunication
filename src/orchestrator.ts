@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import type { ReceivedEmail } from "@primitivedotdev/sdk";
 import {
   decodeEncryptedBody,
   decodeHandshake,
@@ -8,11 +9,11 @@ import {
   encryptJson,
 } from "./crypto.js";
 import { demoGraph } from "./gbrain.js";
-import { getTrust } from "./trust.js";
+import { getTrust, receiveUpgradeRequest, requestUpgrade, saveTrust } from "./trust.js";
 import { DiscoveryService, peerId as derivePeerId } from "./discovery.js";
 import { Matcher } from "./matching.js";
 import { SandboxOrchestrator } from "./sandbox.js";
-import { PrimitiveTransport } from "./transport.js";
+import { PrimitiveTransport, SendOutcome } from "./transport.js";
 import { AgentLogger } from "./logger.js";
 import {
   AgentConfig,
@@ -22,15 +23,18 @@ import {
   KnowledgeGraph,
   MatchResult,
   Peer,
-  PrimitiveMessage,
   SandboxResult,
+  StoredInboundThread,
   TierOnePayload,
+  TrustTier,
+  TrustUpgradePayload,
 } from "./types.js";
 import { readJson, writeJson } from "./storage.js";
 import { colorPseudonym, renderProgress, renderResults } from "./display.js";
 
 const profileFile = "peer_profiles.json";
 const peersFile = "peers.json";
+const inboundThreadsFile = "inbound_threads.json";
 
 export interface OrchestratorOptions {
   identity: Identity;
@@ -60,37 +64,39 @@ export class Orchestrator {
     });
   }
 
-  async handleInbound(message: PrimitiveMessage): Promise<void> {
-    const handshake = decodeHandshake(message.bodyText);
+  async handleInbound(email: ReceivedEmail): Promise<void> {
+    const bodyText = email.text ?? "";
+
+    const handshake = decodeHandshake(bodyText);
     if (handshake) {
-      await this.handleHandshake(handshake, message);
+      await this.handleHandshake(handshake, email);
       return;
     }
 
-    const encrypted = decodeEncryptedBody(message.bodyText);
+    const encrypted = decodeEncryptedBody(bodyText);
     if (!encrypted) {
       return;
     }
 
-    const payload = decryptJson<TierOnePayload>(encrypted, this.options.crypto.secretKey);
-    const profiles = await readJson<Record<string, TierOnePayload>>(profileFile, {});
-    profiles[payload.fromPseudonym] = payload;
-    await writeJson(profileFile, profiles);
-    this.options.logger.debug(`Stored inbound Tier 1 profile from ${payload.fromPseudonym}`);
+    let payload: TierOnePayload | TrustUpgradePayload;
+    try {
+      payload = decryptJson<TierOnePayload | TrustUpgradePayload>(encrypted, this.options.crypto.secretKey);
+    } catch (error) {
+      this.options.logger.error(`Failed to decrypt inbound from ${email.sender.address}: ${(error as Error).message}`);
+      return;
+    }
 
-    const senderEmail = message.from || payload.fromEmail;
-    const peer = await this.upsertPeer({
-      pseudonym: payload.fromPseudonym,
-      primitiveEmail: senderEmail,
-      publicKey: payload.publicKey,
-      source: "manual",
-    });
-    void this.handlePeer(peer).catch((error) => {
-      this.options.logger.error(`Inbound peer flow failed for ${peer.pseudonym}: ${(error as Error).message}`);
-    });
+    if (payload.type === "trust_upgrade_request" || payload.type === "trust_upgrade_confirm") {
+      await this.handleTrustUpgrade(payload, email, encrypted.senderPublicKey);
+      return;
+    }
+
+    if (payload.type === "tier1_profile") {
+      await this.handleTierOne(payload, email, encrypted.senderPublicKey);
+    }
   }
 
-  async connectTo(email: string): Promise<void> {
+  async connectTo(targetEmail: string): Promise<void> {
     const handshake: HandshakePayload = {
       version: 1,
       type: "handshake",
@@ -100,16 +106,20 @@ export class Orchestrator {
       sentAt: new Date().toISOString(),
     };
 
-    this.options.logger.info(`Sending handshake to ${email}`);
-    await this.options.transport.sendAgentMessage(email, {
-      from: this.options.config.primitiveFrom,
-      to: email,
-      subject: `[GBrain ${this.options.identity.pseudonym}] handshake`,
-      bodyText: encodeHandshake(handshake),
-    });
+    this.options.logger.info(`Sending handshake to ${targetEmail}`);
+    await this.options.transport.sendAgentMessage(
+      targetEmail,
+      {
+        from: this.options.config.primitiveFrom,
+        to: targetEmail,
+        subject: `[GBrain ${this.options.identity.pseudonym}] handshake`,
+        bodyText: encodeHandshake(handshake),
+      },
+      this.options.identity.pseudonym,
+    );
     this.options.logger.emitEvent(
       "profile:sent",
-      `${this.options.identity.pseudonym} → ${email} handshake (awaiting webhook response)`,
+      `${this.options.identity.pseudonym} → ${targetEmail} handshake (awaiting webhook response)`,
     );
   }
 
@@ -127,12 +137,37 @@ export class Orchestrator {
     }
   }
 
-  private async handleHandshake(handshake: HandshakePayload, message: PrimitiveMessage): Promise<void> {
+  async requestTrustUpgrade(peerId: string, tier: TrustTier): Promise<void> {
+    const peers = await readJson<Record<string, Peer>>(peersFile, {});
+    const peer = peers[peerId];
+    if (!peer) {
+      this.options.logger.error(`Cannot request trust upgrade: peer ${peerId} not found`);
+      return;
+    }
+    await requestUpgrade(peer.id, peer.pseudonym, tier);
+
+    const payload: TrustUpgradePayload = {
+      version: 1,
+      type: "trust_upgrade_request",
+      fromPseudonym: this.options.identity.pseudonym,
+      tier,
+      reveal: tier === 3 ? this.options.graph.fullReveal : this.options.graph.domainReveal,
+      sentAt: new Date().toISOString(),
+    };
+    await this.sendEncryptedToPeer(peer, payload, `tier ${tier} request`);
+    this.options.logger.emitEvent(
+      "trust:updated",
+      `Requested Tier ${tier} from ${peer.pseudonym} over Primitive`,
+      { peerId: peer.id, tier },
+    );
+  }
+
+  private async handleHandshake(handshake: HandshakePayload, email: ReceivedEmail): Promise<void> {
     if (handshake.publicKey === this.options.crypto.publicKey) {
       return;
     }
 
-    const senderEmail = message.from || handshake.fromEmail;
+    const senderEmail = email.sender.address || handshake.fromEmail;
     if (!senderEmail) {
       this.options.logger.error("Handshake received without a usable sender email; dropping");
       return;
@@ -149,12 +184,93 @@ export class Orchestrator {
       publicKey: handshake.publicKey,
       source: "manual",
     });
+    await this.recordInboundThread(peer, email);
     this.options.logger.emitEvent(
       "peer:discovered",
       `Handshake received from ${peer.pseudonym} via Primitive`,
       { peerId: peer.id },
     );
     await this.handlePeer(peer);
+  }
+
+  private async handleTierOne(
+    payload: TierOnePayload,
+    email: ReceivedEmail,
+    senderPublicKey: string,
+  ): Promise<void> {
+    const profiles = await readJson<Record<string, TierOnePayload>>(profileFile, {});
+    profiles[payload.fromPseudonym] = payload;
+    await writeJson(profileFile, profiles);
+    this.options.logger.debug(`Stored inbound Tier 1 profile from ${payload.fromPseudonym}`);
+
+    const senderEmail = email.sender.address || payload.fromEmail;
+    const peer = await this.upsertPeer({
+      pseudonym: payload.fromPseudonym,
+      primitiveEmail: senderEmail,
+      publicKey: senderPublicKey || payload.publicKey,
+      source: "manual",
+    });
+    await this.recordInboundThread(peer, email);
+    void this.handlePeer(peer).catch((error) => {
+      this.options.logger.error(`Inbound peer flow failed for ${peer.pseudonym}: ${(error as Error).message}`);
+    });
+  }
+
+  private async handleTrustUpgrade(
+    payload: TrustUpgradePayload,
+    email: ReceivedEmail,
+    senderPublicKey: string,
+  ): Promise<void> {
+    const peers = await readJson<Record<string, Peer>>(peersFile, {});
+    const peer = Object.values(peers).find(
+      (candidate) => candidate.publicKey === senderPublicKey || candidate.pseudonym === payload.fromPseudonym,
+    );
+    if (!peer) {
+      this.options.logger.error(
+        `Received trust ${payload.type} from unknown peer ${payload.fromPseudonym}; dropping`,
+      );
+      return;
+    }
+    await this.recordInboundThread(peer, email);
+
+    if (payload.type === "trust_upgrade_request") {
+      const trust = await receiveUpgradeRequest(peer.id, peer.pseudonym, payload.tier);
+      if (trust.tier >= payload.tier) {
+        const confirm: TrustUpgradePayload = {
+          version: 1,
+          type: "trust_upgrade_confirm",
+          fromPseudonym: this.options.identity.pseudonym,
+          tier: payload.tier,
+          reveal: payload.tier === 3 ? this.options.graph.fullReveal : this.options.graph.domainReveal,
+          sentAt: new Date().toISOString(),
+        };
+        await this.sendEncryptedToPeer(peer, confirm, `tier ${payload.tier} confirm`);
+        this.options.logger.emitEvent(
+          "trust:updated",
+          `Mutual Tier ${payload.tier} unlocked with ${peer.pseudonym}`,
+          { peerId: peer.id, tier: payload.tier },
+        );
+      } else {
+        this.options.logger.emitEvent(
+          "trust:updated",
+          `${peer.pseudonym} requested Tier ${payload.tier} — press T/Y to accept`,
+          { peerId: peer.id, tier: payload.tier },
+        );
+      }
+      return;
+    }
+
+    const trust = await getTrust(peer.id, peer.pseudonym);
+    const updated = { ...trust, tier: Math.max(trust.tier, payload.tier) as TrustTier };
+    if (!trust.inboundRequests.includes(payload.tier)) {
+      updated.inboundRequests = [...trust.inboundRequests, payload.tier];
+    }
+    await saveTrust(updated);
+    this.options.logger.emitEvent(
+      "trust:updated",
+      `${peer.pseudonym} confirmed Tier ${payload.tier}`,
+      { peerId: peer.id, tier: payload.tier },
+    );
   }
 
   private async upsertPeer(input: {
@@ -213,7 +329,15 @@ export class Orchestrator {
       let sandbox: SandboxResult | undefined;
       if (match.score >= 70) {
         this.totalSandboxes += 1;
-        sandbox = await this.options.sandbox.run(peer, match, this.options.graph, peerGraph);
+        const inbound = await this.loadInboundThread(peer);
+        sandbox = await this.options.sandbox.run(
+          peer,
+          match,
+          this.options.graph,
+          peerGraph,
+          this.options.identity.pseudonym,
+          inbound,
+        );
         this.completedSandboxes += 1;
         this.options.logger.emitEvent(
           "match:ready",
@@ -242,16 +366,77 @@ export class Orchestrator {
       sentAt: new Date().toISOString(),
     };
 
-    const encrypted = encryptJson(payload, peer.publicKey, this.options.crypto.secretKey, this.options.crypto.publicKey);
-    await this.options.transport.sendAgentMessage(peer.primitiveEmail, {
-      from: this.options.config.primitiveFrom,
+    await this.sendEncryptedToPeer(peer, payload, "encrypted Tier 1 profile");
+    this.options.logger.emitEvent(
+      "profile:sent",
+      `${this.options.identity.pseudonym} → ${peer.pseudonym} encrypted Tier 1 profile`,
+      {
+        peerId: peer.id,
+      },
+    );
+  }
+
+  private async sendEncryptedToPeer(
+    peer: Peer,
+    payload: TierOnePayload | TrustUpgradePayload,
+    subjectSuffix: string,
+  ): Promise<SendOutcome> {
+    const encrypted = encryptJson(
+      payload,
+      peer.publicKey,
+      this.options.crypto.secretKey,
+      this.options.crypto.publicKey,
+    );
+    const bodyText = encodeEncryptedBody(encrypted);
+    const inbound = await this.loadInboundEmail(peer);
+
+    if (inbound) {
+      return this.options.transport.reply({
+        inbound,
+        bodyText,
+        wait: true,
+        fromDisplayName: this.options.identity.pseudonym,
+      });
+    }
+
+    return this.options.transport.send({
       to: peer.primitiveEmail,
-      subject: `[GBrain ${this.options.identity.pseudonym}] encrypted Tier 1 intro`,
-      bodyText: encodeEncryptedBody(encrypted),
+      subject: `[GBrain ${this.options.identity.pseudonym}] ${subjectSuffix}`,
+      bodyText,
+      wait: true,
+      fromDisplayName: this.options.identity.pseudonym,
     });
-    this.options.logger.emitEvent("profile:sent", `${this.options.identity.pseudonym} → ${peer.pseudonym} encrypted Tier 1 profile`, {
+  }
+
+  private async recordInboundThread(peer: Peer, email: ReceivedEmail): Promise<void> {
+    const record: StoredInboundThread = {
       peerId: peer.id,
-    });
+      emailId: email.id,
+      messageId: email.thread.messageId,
+      references: email.thread.references,
+      fromAddress: email.sender.address,
+      subject: email.subject,
+      receivedAt: email.receivedAt,
+    };
+    const existing = await readJson<Record<string, StoredInboundThread>>(inboundThreadsFile, {});
+    existing[peer.id] = record;
+    await writeJson(inboundThreadsFile, existing);
+    await this.cacheInboundEmail(peer, email);
+  }
+
+  private async cacheInboundEmail(peer: Peer, email: ReceivedEmail): Promise<void> {
+    const cache = await readJson<Record<string, ReceivedEmail>>("inbound_emails.json", {});
+    cache[peer.id] = email;
+    await writeJson("inbound_emails.json", cache);
+  }
+
+  private async loadInboundEmail(peer: Peer): Promise<ReceivedEmail | null> {
+    const cache = await readJson<Record<string, ReceivedEmail>>("inbound_emails.json", {});
+    return cache[peer.id] ?? null;
+  }
+
+  private async loadInboundThread(peer: Peer): Promise<ReceivedEmail | null> {
+    return this.loadInboundEmail(peer);
   }
 
   private async loadPeerGraph(peer: Peer): Promise<KnowledgeGraph> {

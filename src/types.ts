@@ -93,6 +93,15 @@ export interface HandshakePayload {
 
 export type TrustTier = 1 | 2 | 3;
 
+export interface TrustUpgradePayload {
+  version: 1;
+  type: "trust_upgrade_request" | "trust_upgrade_confirm";
+  fromPseudonym: string;
+  tier: TrustTier;
+  reveal?: DomainReveal | FullReveal;
+  sentAt: string;
+}
+
 export interface TrustRecord {
   peerId: string;
   pseudonym: string;
@@ -149,6 +158,16 @@ export interface PrimitiveMessage {
   bodyText: string;
   inReplyTo?: string;
   references?: string[];
+}
+
+export interface StoredInboundThread {
+  peerId: string;
+  emailId: string;
+  messageId: string | null;
+  references: string[];
+  fromAddress: string;
+  subject: string | null;
+  receivedAt: string;
 }
 
 export interface AgentOptions {
