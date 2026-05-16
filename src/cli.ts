@@ -4,6 +4,8 @@ import { hideBin } from "yargs/helpers";
 import { startAgent } from "./index.js";
 import { startSimulation } from "./simulate.js";
 import { startInteraction } from "./interaction.js";
+import chalk from "chalk";
+import { pullProfileFromLocalGbrain, runProfileWizard } from "./setup.js";
 
 void yargs(hideBin(process.argv))
   .scriptName("gbrain-agent")
@@ -83,6 +85,35 @@ void yargs(hideBin(process.argv))
         process.exit(0);
       });
     },
+  )
+  .command("profile", "Manage your agent profile", (yargs) =>
+    yargs
+      .command(
+        "pull",
+        "Import profile from local gbrain CLI (~/.gbrain)",
+        () => {},
+        async () => {
+          const graph = await pullProfileFromLocalGbrain();
+          if (!graph) {
+            console.error(chalk.red("Could not import from local gbrain."));
+            console.error(chalk.dim("Install gbrain, run gbrain init, then retry."));
+            process.exitCode = 1;
+            return;
+          }
+          console.log(chalk.green("✓") + " Profile saved to state/profile.json from local gbrain");
+          console.log(chalk.dim(`  ${graph.summary.slice(0, 120)}${graph.summary.length > 120 ? "…" : ""}`));
+        },
+      )
+      .command(
+        "wizard",
+        "Run the interactive profile wizard",
+        () => {},
+        async () => {
+          await runProfileWizard();
+          console.log(chalk.green("✓") + " Profile updated. Run 'gbrain-agent start' to use it.");
+        },
+      )
+      .demandCommand(1, "wizard"),
   )
   .demandCommand(1)
   .strict()

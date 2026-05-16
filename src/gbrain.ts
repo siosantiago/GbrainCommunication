@@ -1,5 +1,6 @@
 import { AgentConfig, CapabilityVector, KnowledgeGraph } from "./types.js";
 import { AgentLogger } from "./logger.js";
+import { readJson } from "./storage.js";
 
 export class GBrainClient {
   constructor(
@@ -23,26 +24,33 @@ export class GBrainClient {
   }
 
   async loadGraph(): Promise<KnowledgeGraph> {
-    if (!this.config.gbrainApiKey || this.config.gbrainApiKey.startsWith("demo_")) {
-      return demoGraph();
+    // Real GBrain API takes priority
+    if (this.config.gbrainApiKey && !this.config.gbrainApiKey.startsWith("demo_")) {
+      try {
+        const response = await fetch(`${this.baseUrl()}/profile`, {
+          headers: {
+            Authorization: `Bearer ${this.config.gbrainApiKey}`,
+            Accept: "application/json",
+          },
+        });
+        if (!response.ok) {
+          throw new Error(`GBrain profile request returned ${response.status}`);
+        }
+        const raw = (await response.json()) as Record<string, unknown>;
+        return extractGraph(raw);
+      } catch (error) {
+        this.logger.error(`GBrain profile unavailable, falling back: ${(error as Error).message}`);
+      }
     }
 
-    try {
-      const response = await fetch(`${this.baseUrl()}/profile`, {
-        headers: {
-          Authorization: `Bearer ${this.config.gbrainApiKey}`,
-          Accept: "application/json",
-        },
-      });
-      if (!response.ok) {
-        throw new Error(`GBrain profile request returned ${response.status}`);
-      }
-      const raw = (await response.json()) as Record<string, unknown>;
-      return extractGraph(raw);
-    } catch (error) {
-      this.logger.error(`GBrain profile unavailable, using demo graph: ${(error as Error).message}`);
-      return demoGraph();
+    // Fall back to user-defined profile (wizard or local gbrain pull)
+    const saved = await readJson<KnowledgeGraph | null>("profile.json", null);
+    if (saved?.summary) {
+      const { _source: _ignored, ...graph } = saved as KnowledgeGraph & { _source?: string };
+      return graph;
     }
+
+    return demoGraph();
   }
 
   private baseUrl(): string {
