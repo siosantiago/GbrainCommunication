@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import Anthropic from "@anthropic-ai/sdk";
 import { AgentConfig, CapabilityVector, KnowledgeGraph } from "./types.js";
 import { AgentLogger } from "./logger.js";
 import { readJson, writeJson } from "./storage.js";
+import { LLMClient } from "./llm.js";
 
 const profileFile = "profile.json";
 const execFileAsync = promisify(execFile);
@@ -42,11 +42,14 @@ export class GBrainClient {
     }
 
     const brainProfile = await this.queryLocalGBrain();
-    if (brainProfile) {
+    if (brainProfile && hasMeaningfulProfileContent(brainProfile)) {
       await writeJson(profileFile, { ...brainProfile, _source: "local-brain" });
       this.lastSource = "local-brain";
       this.logger.info("GBrain profile loaded (from local brain)");
       return extractGraph(brainProfile);
+    }
+    if (brainProfile) {
+      this.logger.debug("Local gbrain query returned unstructured output — LLM key needed to parse it. Run: gbrain-agent setup");
     }
 
     if (this.config.gbrainApiKey && !this.config.gbrainApiKey.startsWith("demo_")) {
@@ -76,22 +79,32 @@ export class GBrainClient {
   }
 
   private async queryLocalGBrain(): Promise<Record<string, unknown> | null> {
+    // Try direct profile pages first — much cleaner than semantic search
+    for (const slug of ["profile", "about-me", "me", "my-profile"]) {
+      try {
+        const { stdout, stderr } = await execFileAsync("gbrain", ["get", slug], { timeout: 8_000 });
+        const text = stdout.trim();
+        if (text && !stderr.toLowerCase().includes("not found") && !text.toLowerCase().includes("not found")) {
+          this.logger.debug(`Found gbrain page '${slug}' — parsing with LLM`);
+          const parsed = await parseProfileWithLLM(text, this.config.llmApiKey, this.logger);
+          if (parsed && hasMeaningfulProfileContent(parsed)) return parsed;
+        }
+      } catch {
+        // page doesn't exist, try next
+      }
+    }
+
+    // Fallback: semantic query — works if user has personal notes in their brain
     try {
       const { stdout } = await execFileAsync(
         "gbrain",
-        [
-          "query",
-          "summarize: my skills, what I'm building, what I need help with, my domain, what I care about",
-          "--limit",
-          "5",
-        ],
+        ["query", "my skills projects background what I build what I need", "--limit", "5", "--detail", "low"],
         { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 },
       );
       const text = stdout.trim();
-      if (!text) {
-        return null;
-      }
-      return await parseProfileWithClaude(text, this.config.anthropicApiKey, this.logger);
+      if (!text) return null;
+      const parsed = await parseProfileWithLLM(text, this.config.llmApiKey, this.logger);
+      return parsed;
     } catch (error) {
       const message = (error as NodeJS.ErrnoException).code === "ENOENT"
         ? "gbrain CLI not found"
@@ -101,52 +114,75 @@ export class GBrainClient {
     }
   }
 
+  async saveProfileToGBrain(profile: Record<string, unknown>): Promise<void> {
+    const lines = [
+      "# GBrain Agent Profile",
+      "",
+      `## Summary`,
+      String(profile.summary ?? ""),
+      "",
+      `## Current Work`,
+      String(profile.current_work ?? ""),
+      "",
+      `## Skills`,
+      ...(Array.isArray(profile.skills) ? profile.skills.map((s: unknown) => `- ${s}`) : []),
+      "",
+      `## Needs`,
+      ...(Array.isArray(profile.needs) ? profile.needs.map((s: unknown) => `- ${s}`) : []),
+      "",
+      `## Domain`,
+      String(profile.domain ?? ""),
+      "",
+      `## Interests`,
+      ...(Array.isArray(profile.interests) ? profile.interests.map((s: unknown) => `- ${s}`) : []),
+    ];
+    const content = lines.join("\n");
+
+    try {
+      const child = execFile("gbrain", ["put", "profile"], { timeout: 10_000 });
+      child.stdin?.write(content);
+      child.stdin?.end();
+      await new Promise<void>((resolve) => child.on("close", resolve));
+      this.logger.debug("Profile saved to gbrain page 'profile'");
+    } catch {
+      // gbrain not available or write failed — non-fatal
+    }
+  }
+
   private baseUrl(): string {
     return this.config.gbrainBaseUrl ?? process.env.GBRAIN_BASE_URL ?? "https://api.gbrain.dev/v1";
   }
 }
 
-async function parseProfileWithClaude(
+async function parseProfileWithLLM(
   rawText: string,
   apiKey: string | undefined,
   logger: AgentLogger,
 ): Promise<Record<string, unknown> | null> {
-  if (!apiKey || apiKey.startsWith("demo_")) {
-    logger.debug("No Anthropic key for profile parsing; using heuristic parse");
+  const llm = new LLMClient(apiKey);
+  if (!llm.available) {
+    logger.debug("No LLM key for profile parsing; using heuristic parse");
     return heuristicProfile(rawText);
   }
 
+  const prompt = [
+    "Extract a structured profile from the GBrain query output below.",
+    "Return ONLY valid JSON with these keys:",
+    "  current_work (string), skills (string[]), needs (string[]),",
+    "  domain (string), summary (string), interests (string[]),",
+    "  projects (string[]), cares_about (string[]).",
+    "Use concise phrases. If a field cannot be inferred, return an empty array or empty string.",
+    "",
+    "GBrain query output:",
+    rawText,
+  ].join("\n");
+
   try {
-    const anthropic = new Anthropic({ apiKey });
-    const response = await anthropic.messages.create({
-      model: "claude-3-5-sonnet-latest",
-      max_tokens: 900,
-      temperature: 0.1,
-      messages: [
-        {
-          role: "user",
-          content: [
-            "Extract a structured profile from the GBrain query output below.",
-            "Return ONLY valid JSON with these keys:",
-            "  current_work (string), skills (string[]), needs (string[]),",
-            "  domain (string), summary (string), interests (string[]),",
-            "  projects (string[]), cares_about (string[]).",
-            "Use concise phrases. If a field cannot be inferred, return an empty array or empty string.",
-            "",
-            "GBrain query output:",
-            rawText,
-          ].join("\n"),
-        },
-      ],
-    });
-    const text = response.content
-      .map((block) => ("text" in block ? block.text : ""))
-      .join("")
-      .trim();
+    const text = await llm.complete(prompt, { maxTokens: 900, temperature: 0.1 });
     const cleaned = text.replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
     return JSON.parse(cleaned) as Record<string, unknown>;
   } catch (error) {
-    logger.debug(`Claude profile parse failed: ${(error as Error).message}`);
+    logger.debug(`LLM profile parse failed: ${(error as Error).message}`);
     return heuristicProfile(rawText);
   }
 }
@@ -242,18 +278,19 @@ function dedupe(items: string[]): string[] {
 }
 
 export function hasMeaningfulProfileContent(raw: Record<string, unknown>): boolean {
-  for (const [key, value] of Object.entries(raw)) {
-    if (key.startsWith("_")) continue;
-    if (typeof value === "string" && value.trim()) return true;
-    if (Array.isArray(value) && value.some((item) => typeof item === "string" ? item.trim() : Boolean(item))) {
-      return true;
-    }
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      if (hasMeaningfulProfileContent(value as Record<string, unknown>)) return true;
-    }
-    if (typeof value === "number" || typeof value === "boolean") return true;
+  const summary = typeof raw.summary === "string" ? raw.summary.trim() : "";
+  // Raw gbrain CLI output looks like "[1.0000] skill -- ..." — reject it
+  if (summary.startsWith("[") && summary.includes("--")) {
+    return false;
   }
-  return false;
+
+  const lists = ["skills", "needs", "interests", "offers", "projects", "cares_about"];
+  const hasListContent = lists.some((key) => {
+    const val = raw[key];
+    return Array.isArray(val) && val.length > 0;
+  });
+
+  return hasListContent || (summary.length > 20 && !summary.startsWith("["));
 }
 
 function inferCachedSource(raw: Record<string, unknown>): ProfileSource {

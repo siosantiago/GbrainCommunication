@@ -1,22 +1,32 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { CollaborationBrief, KnowledgeGraph, MatchResult, Peer, SandboxResult } from "./types.js";
 import { AgentLogger } from "./logger.js";
 import { readJson, writeJson } from "./storage.js";
 import { PrimitiveTransport } from "./transport.js";
+import { LLMClient } from "./llm.js";
+
+// Strip real identity fields before passing to LLM — keeps Tier 1 anonymity through sandbox rounds
+function anonGraph(graph: KnowledgeGraph, label: "Person A" | "Person B"): Partial<KnowledgeGraph> {
+  return {
+    summary: graph.summary.replace(/^[A-Z][a-z]+ [A-Z][a-z]+\s*[—–-]\s*/, `${label} — `),
+    capabilities: graph.capabilities,
+    problems: graph.problems,
+    searches: graph.searches,
+    caresAbout: graph.caresAbout,
+    domainReveal: { role: graph.domainReveal.role, domain: graph.domainReveal.domain },
+  };
+}
 
 const sandboxesFile = "sandboxes.json";
 
 export class SandboxOrchestrator {
-  private readonly anthropic?: Anthropic;
+  private readonly llm: LLMClient;
 
   constructor(
     apiKey: string | undefined,
     private readonly transport: PrimitiveTransport,
     private readonly logger: AgentLogger,
   ) {
-    if (apiKey && !apiKey.startsWith("demo_")) {
-      this.anthropic = new Anthropic({ apiKey });
-    }
+    this.llm = new LLMClient(apiKey);
   }
 
   async run(peer: Peer, match: MatchResult, myGraph: KnowledgeGraph, peerGraph: KnowledgeGraph): Promise<SandboxResult> {
@@ -27,9 +37,9 @@ export class SandboxOrchestrator {
 
     this.logger.emitEvent("sandbox:started", `Sandbox started with ${peer.pseudonym}`, { peerId: peer.id });
     const prompts = [
-      "Round 1: Exchange capability vectors (what I have, what I need).",
-      "Round 2: Exchange project context and brainstorm collaboration ideas.",
-      "Round 3: Draft a collaboration brief with what we'd build, each contribution, what each gets, and non-obvious connections.",
+      "Round 1: Introduce yourself as an AI agent. Share your top 3 capabilities and your most pressing need. Ask a specific question about what they're building.",
+      "Round 2: Respond to Round 1. Share more context on your current project — what's working, what's stuck. Identify one concrete way you could help each other in the next 48 hours.",
+      "Round 3: Propose a specific collaboration — one thing you'd build together at the hackathon, how each person contributes, and what makes this non-obvious from the outside.",
     ] as const;
 
     const rounds = [];
@@ -78,7 +88,7 @@ export class SandboxOrchestrator {
     myGraph: KnowledgeGraph,
     peerGraph: KnowledgeGraph,
   ): Promise<string> {
-    if (!this.anthropic) {
+    if (!this.llm.available) {
       return [
         prompt,
         `Local agent offers: ${myGraph.capabilities.offers.join(", ")}.`,
@@ -87,24 +97,16 @@ export class SandboxOrchestrator {
       ].join("\n");
     }
 
-    const response = await this.anthropic.messages.create({
-      model: "claude-3-5-sonnet-latest",
-      max_tokens: 700,
-      temperature: 0.3,
-      messages: [
-        {
-          role: "user",
-          content: [
-            "Write a concise agent-to-agent Primitive email sandbox message.",
-            prompt,
-            `Match: ${JSON.stringify(match)}`,
-            `Local graph: ${JSON.stringify(myGraph)}`,
-            `Peer graph: ${JSON.stringify(peerGraph)}`,
-          ].join("\n"),
-        },
-      ],
-    });
-    return response.content.map((block) => ("text" in block ? block.text : "")).join("\n");
+    return this.llm.complete(
+      [
+        "Write a concise agent-to-agent Primitive email sandbox message. Use 'Person A' for the local agent and 'Person B' for the peer — never use real names.",
+        prompt,
+        `Match: ${JSON.stringify(match)}`,
+        `Local graph (Person A): ${JSON.stringify(anonGraph(myGraph, "Person A"))}`,
+        `Peer graph (Person B): ${JSON.stringify(anonGraph(peerGraph, "Person B"))}`,
+      ].join("\n"),
+      { maxTokens: 700, temperature: 0.3 },
+    );
   }
 
   private async generateBrief(
@@ -113,7 +115,7 @@ export class SandboxOrchestrator {
     peerGraph: KnowledgeGraph,
     roundResponses: string[],
   ): Promise<CollaborationBrief> {
-    if (!this.anthropic) {
+    if (!this.llm.available) {
       return {
         title: match.collaboration,
         whatWeWouldBuild: `A hackathon collaboration around ${match.collaboration}.`,
@@ -129,26 +131,33 @@ export class SandboxOrchestrator {
       };
     }
 
-    const response = await this.anthropic.messages.create({
-      model: "claude-3-5-sonnet-latest",
-      max_tokens: 900,
-      temperature: 0.2,
-      messages: [
-        {
-          role: "user",
-          content: [
-            "Return only JSON for a collaboration brief with keys title, whatWeWouldBuild, eachContributes array, eachGets array, nonObviousConnections array.",
-            `Match: ${JSON.stringify(match)}`,
-            `Local graph: ${JSON.stringify(myGraph)}`,
-            `Peer graph: ${JSON.stringify(peerGraph)}`,
-            `Rounds: ${JSON.stringify(roundResponses)}`,
-          ].join("\n"),
-        },
-      ],
-    });
-    const text = response.content.map((block) => ("text" in block ? block.text : "")).join("");
-    return JSON.parse(text.replace(/^```json\s*/i, "").replace(/```$/i, "")) as CollaborationBrief;
+    const text = await this.llm.complete(
+      [
+        "Return only valid JSON for a collaboration brief. Keys: title, whatWeWouldBuild, eachContributes (string[]), eachGets (string[]), nonObviousConnections (string[]).",
+        "Use 'Person A' and 'Person B' — never use real names. Each array item must be a plain string.",
+        `Match: ${JSON.stringify(match)}`,
+        `Local graph (Person A): ${JSON.stringify(anonGraph(myGraph, "Person A"))}`,
+        `Peer graph (Person B): ${JSON.stringify(anonGraph(peerGraph, "Person B"))}`,
+        `Rounds: ${JSON.stringify(roundResponses)}`,
+      ].join("\n"),
+      { maxTokens: 900, temperature: 0.2 },
+    );
+    const raw = JSON.parse(text.replace(/^```json\s*/i, "").replace(/```$/i, "")) as Record<string, unknown>;
+    return {
+      title: String(raw.title ?? match.collaboration),
+      whatWeWouldBuild: String(raw.whatWeWouldBuild ?? ""),
+      eachContributes: toStrings(raw.eachContributes),
+      eachGets: toStrings(raw.eachGets),
+      nonObviousConnections: toStrings(raw.nonObviousConnections),
+    };
   }
+}
+
+function toStrings(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) =>
+    typeof item === "string" ? item : typeof item === "object" && item !== null ? Object.values(item).join(" — ") : String(item),
+  );
 }
 
 function roundLabel(round: 1 | 2 | 3): string {

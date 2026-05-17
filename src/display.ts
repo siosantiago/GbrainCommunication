@@ -67,7 +67,7 @@ export function renderMatchCard(rank: number, match: MatchResult, sandbox?: Sand
   console.log(`│ ${pad(`${chalk.dim("Trust:")} ${trustMeter(match.trustTier)} ${chalk.dim(trustLabel(match.trustTier))}`)} │`);
   console.log(`├${"─".repeat(width - 2)}┤`);
   console.log(
-    `│ ${pad(`${key("T")} Upgrade to Tier 2   ${key("R")} Read full brief   ${key("Y")} Meet   ${key("P")} Pass`)} │`,
+    `│ ${pad(`${key("T")} Upgrade to Tier 2   ${key("R")} Read full brief   ${key("P")} Pass`)} │`,
   );
   console.log(`└${"─".repeat(width - 2)}┘`);
 }
@@ -81,6 +81,40 @@ export function renderResults(matches: MatchResult[], sandboxes: SandboxResult[]
     .sort((a, b) => b.score - a.score)
     .slice(0, 12)
     .forEach((match, index) => renderMatchCard(index + 1, match, sandboxByPeer.get(match.peerId)));
+
+  if (sandboxes.length > 0) {
+    console.log("");
+    console.log(chalk.bold("COLLABORATION BRIEFS"));
+    console.log(chalk.dim("─".repeat(52)));
+    for (const sb of sandboxes) {
+      console.log(`${chalk.green(sb.brief.title)}`);
+      console.log(`  ${chalk.dim(sb.pseudonym)}`);
+      console.log("");
+    }
+  }
+}
+
+export function renderFinalRanking(matches: MatchResult[], sandboxes: SandboxResult[]): void {
+  const sandboxByPeer = new Map(sandboxes.map((s) => [s.peerId, s]));
+  const ranked = [...matches]
+    .filter((m) => sandboxByPeer.has(m.peerId))
+    .sort((a, b) => b.score - a.score);
+
+  if (!ranked.length) return;
+
+  console.log("");
+  console.log(chalk.bold.cyan("━━ WHO TO COLLABORATE WITH FIRST ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"));
+  ranked.forEach((m, i) => {
+    const sb = sandboxByPeer.get(m.peerId)!;
+    const medal = i === 0 ? chalk.yellow("★ #1") : i === 1 ? chalk.white("  #2") : chalk.dim(`  #${i + 1}`);
+    console.log(`${medal}  ${colorPseudonym(m.pseudonym)}  ${chalk.yellow(`${m.score}pts`)}`);
+    console.log(`     ${chalk.dim(sb.brief.title)}`);
+    if (sb.brief.nonObviousConnections[0]) {
+      console.log(`     ${chalk.blue("→")} ${chalk.dim(sb.brief.nonObviousConnections[0])}`);
+    }
+  });
+  console.log(chalk.bold.cyan("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"));
+  console.log("");
 }
 
 function key(value: string): string {

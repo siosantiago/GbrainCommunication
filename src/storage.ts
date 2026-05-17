@@ -1,7 +1,18 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-const stateDir = path.resolve(process.cwd(), "state");
+const stateDir = path.resolve(
+  process.env.GBRAIN_STATE_DIR ?? path.join(process.cwd(), "state"),
+);
+
+// Serialize concurrent writes per file path to avoid torn reads
+const writeLocks = new Map<string, Promise<void>>();
+function serializedWrite(filePath: string, fn: () => Promise<void>): Promise<void> {
+  const prev = writeLocks.get(filePath) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  writeLocks.set(filePath, next.then(() => {}, () => {}));
+  return next;
+}
 
 export function statePath(fileName: string): string {
   return path.join(stateDir, fileName);
@@ -19,7 +30,7 @@ export async function readJson<T>(fileName: string, fallback: T): Promise<T> {
     return JSON.parse(raw) as T;
   } catch (error) {
     const nodeError = error as NodeJS.ErrnoException;
-    if (nodeError.code === "ENOENT") {
+    if (nodeError.code === "ENOENT" || error instanceof SyntaxError) {
       return fallback;
     }
     throw error;
@@ -28,8 +39,9 @@ export async function readJson<T>(fileName: string, fallback: T): Promise<T> {
 
 export async function writeJson<T>(fileName: string, value: T): Promise<void> {
   await ensureStateDir();
+  const filePath = statePath(fileName);
   const serialized = `${JSON.stringify(value, null, 2)}\n`;
-  await writeFile(statePath(fileName), serialized, "utf8");
+  await serializedWrite(filePath, () => writeFile(filePath, serialized, "utf8"));
 }
 
 export async function upsertRecord<T extends Record<string, unknown>>(

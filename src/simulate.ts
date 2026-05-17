@@ -11,11 +11,15 @@ export interface SimulatedAgent {
   stop: () => void;
 }
 
-export async function startSimulation(count: number, options: { logs?: boolean; silent?: boolean } = {}): Promise<SimulatedAgent[]> {
+export async function startSimulation(
+  count: number,
+  options: { logs?: boolean; silent?: boolean; staggerSeconds?: number } = {},
+): Promise<SimulatedAgent[]> {
   const logger = createLogger(options);
   const agents: SimulatedAgent[] = [];
+  const stagger = (options.staggerSeconds ?? 0) * 1000;
 
-  for (let index = 0; index < count; index += 1) {
+  async function spawnOne(index: number): Promise<void> {
     const bonjour = new Bonjour();
     const profile = demoProfiles[index % demoProfiles.length];
     const keypair = generateKeypair();
@@ -46,6 +50,22 @@ export async function startSimulation(count: number, options: { logs?: boolean; 
         bonjour.destroy();
       },
     });
+  }
+
+  if (stagger > 0) {
+    // Spawn first agent immediately, then stagger the rest
+    for (let index = 0; index < count; index += 1) {
+      if (index === 0) {
+        await spawnOne(index);
+      } else {
+        const delay = stagger * index;
+        setTimeout(() => { void spawnOne(index); }, delay);
+      }
+    }
+  } else {
+    for (let index = 0; index < count; index += 1) {
+      await spawnOne(index);
+    }
   }
 
   return agents;

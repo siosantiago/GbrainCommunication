@@ -1,20 +1,18 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { KnowledgeGraph, MatchResult, Peer, TrustTier } from "./types.js";
 import { AgentLogger } from "./logger.js";
 import { readJson, writeJson } from "./storage.js";
+import { LLMClient } from "./llm.js";
 
 const matchesFile = "matches.json";
 
 export class Matcher {
-  private readonly anthropic?: Anthropic;
+  private readonly llm: LLMClient;
 
   constructor(
     apiKey: string | undefined,
     private readonly logger: AgentLogger,
   ) {
-    if (apiKey && !apiKey.startsWith("demo_")) {
-      this.anthropic = new Anthropic({ apiKey });
-    }
+    this.llm = new LLMClient(apiKey);
   }
 
   async score(peer: Peer, myGraph: KnowledgeGraph, peerGraph: KnowledgeGraph, trustTier: TrustTier): Promise<MatchResult> {
@@ -23,8 +21,8 @@ export class Matcher {
       return cached[peer.id];
     }
 
-    const result = this.anthropic
-      ? await this.scoreWithClaude(peer, myGraph, peerGraph, trustTier)
+    const result = this.llm.available
+      ? await this.scoreWithLLM(peer, myGraph, peerGraph, trustTier)
       : this.scoreLocally(peer, myGraph, peerGraph, trustTier);
 
     cached[peer.id] = result;
@@ -33,32 +31,33 @@ export class Matcher {
     return result;
   }
 
-  private async scoreWithClaude(
+  private async scoreWithLLM(
     peer: Peer,
     myGraph: KnowledgeGraph,
     peerGraph: KnowledgeGraph,
     trustTier: TrustTier,
   ): Promise<MatchResult> {
+    // At Tier 1 pass only capabilities — never expose real names in the prompt
+    const myAnon = {
+      summary: myGraph.summary.replace(/^[A-Z][a-z]+ [A-Z][a-z]+\s*[—–-]\s*/, "Person A — "),
+      capabilities: myGraph.capabilities,
+      problems: myGraph.problems,
+      searches: myGraph.searches,
+    };
+    const peerAnon = {
+      summary: peerGraph.summary,
+      capabilities: peerGraph.capabilities,
+    };
     const prompt = [
       "You are matching two hackathon attendees from their GBrain collaboration graphs.",
-      "Return only valid JSON with keys: score (0-100), collaboration, theyBring array, youBring array, reasons array.",
-      "Prioritize specific non-obvious collaboration potential and cite concrete graph facts.",
+      "Return only valid JSON with keys: score (0-100), collaboration (string), theyBring (string[]), youBring (string[]), reasons (string[]).",
+      "Prioritize specific non-obvious collaboration potential. Do NOT use real names — use 'Person A' and 'Person B'.",
       "",
-      `Person A (local): ${JSON.stringify(myGraph)}`,
-      `Person B (${peer.pseudonym}): ${JSON.stringify(peerGraph)}`,
+      `Person A (local): ${JSON.stringify(myAnon)}`,
+      `Person B (${peer.pseudonym}): ${JSON.stringify(peerAnon)}`,
     ].join("\n");
 
-    const response = await this.anthropic!.messages.create({
-      model: "claude-3-5-sonnet-latest",
-      max_tokens: 900,
-      temperature: 0.2,
-      messages: [{ role: "user", content: prompt }],
-    });
-
-    const text = response.content
-      .map((block) => ("text" in block ? block.text : ""))
-      .join("")
-      .trim();
+    const text = await this.llm.complete(prompt, { maxTokens: 900, temperature: 0.2 });
     const parsed = JSON.parse(text.replace(/^```json\s*/i, "").replace(/```$/i, "")) as Partial<MatchResult>;
     return normalizeMatch(peer, parsed, trustTier);
   }
@@ -72,7 +71,9 @@ export class Matcher {
     const peerSatisfiesMe = overlap(myNeeds, peerOffers);
     const iSatisfyPeer = overlap(peerNeeds, myOffers);
     const sharedInterests = overlap(lowerSet(myGraph.capabilities.interests), lowerSet(peerGraph.capabilities.interests));
-    const score = Math.min(99, 55 + peerSatisfiesMe.length * 12 + iSatisfyPeer.length * 12 + sharedInterests.length * 5);
+
+    // Base 30 so a zero-overlap match honestly shows 30, not a misleading 55
+    const score = Math.min(99, 30 + peerSatisfiesMe.length * 15 + iSatisfyPeer.length * 15 + sharedInterests.length * 8);
 
     return normalizeMatch(
       peer,
@@ -85,6 +86,9 @@ export class Matcher {
           ...peerSatisfiesMe.map((item) => `They offer ${item}, which matches one of your active needs`),
           ...iSatisfyPeer.map((item) => `You offer ${item}, which matches one of their active needs`),
           ...sharedInterests.map((item) => `You both care about ${item}`),
+          ...(peerSatisfiesMe.length === 0 && iSatisfyPeer.length === 0
+            ? ["Profiles don't share obvious skill overlap — review their summary manually"]
+            : []),
         ].slice(0, 5),
       },
       trustTier,
@@ -107,9 +111,15 @@ function normalizeMatch(peer: Peer, result: Partial<MatchResult>, trustTier: Tru
 }
 
 function inferCollaboration(myGraph: KnowledgeGraph, peerGraph: KnowledgeGraph): string {
-  const project = myGraph.capabilities.projects[0] ?? "a fast hackathon prototype";
-  const peerOffer = peerGraph.capabilities.offers[0] ?? "their missing capability";
-  return `${project} using ${peerOffer}`;
+  const myProject = myGraph.capabilities.projects[0];
+  const peerProject = peerGraph.capabilities.projects[0];
+  const peerOffer = peerGraph.capabilities.offers[0];
+  const myNeed = myGraph.capabilities.needs[0];
+
+  if (myProject && peerOffer) return `${myProject} + ${peerOffer}`;
+  if (peerProject && myProject) return `${myProject} × ${peerProject}`;
+  if (myNeed && peerOffer) return `${peerOffer} to address: ${myNeed}`;
+  return "Explore collaboration potential in sandbox";
 }
 
 function lowerSet(items: string[]): string[] {

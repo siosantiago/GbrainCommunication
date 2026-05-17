@@ -74,28 +74,45 @@ function extractMessage(event: unknown): PrimitiveMessage | null {
         message_id?: string;
         messageId?: string;
         in_reply_to?: string;
+        inReplyTo?: string;
+        references?: string[] | string;
+      };
+      parsed?: {
+        body_text?: string;
+        in_reply_to?: string;
         references?: string[] | string;
       };
       body_text?: string;
       bodyText?: string;
       text?: string;
+      from?: string;
+      to?: string;
+      subject?: string;
     };
   };
 
   const email = value.email;
-  if (!email?.headers) {
+  if (!email) {
     return null;
   }
 
-  const references = email.headers.references;
+  const from = email.headers?.from ?? email.from ?? "";
+  const to = email.headers?.to ?? email.to ?? "";
+  const subject = email.headers?.subject ?? email.subject ?? "";
+  if (!from && !subject) {
+    return null;
+  }
+
+  const rawReferences = email.headers?.references ?? email.parsed?.references;
+  const rawInReplyTo = email.headers?.in_reply_to ?? email.headers?.inReplyTo ?? email.parsed?.in_reply_to;
   return {
     id: email.id ?? value.id,
-    messageId: email.headers.message_id ?? email.headers.messageId,
-    from: email.headers.from ?? "",
-    to: email.headers.to ?? "",
-    subject: email.headers.subject ?? "",
-    bodyText: email.body_text ?? email.bodyText ?? email.text ?? "",
-    inReplyTo: email.headers.in_reply_to,
-    references: Array.isArray(references) ? references : references?.split(/\s+/),
+    messageId: email.headers?.message_id ?? email.headers?.messageId,
+    from,
+    to,
+    subject,
+    bodyText: email.parsed?.body_text ?? email.body_text ?? email.bodyText ?? email.text ?? "",
+    inReplyTo: rawInReplyTo,
+    references: Array.isArray(rawReferences) ? rawReferences : rawReferences?.split(/\s+/),
   };
 }

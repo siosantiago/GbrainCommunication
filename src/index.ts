@@ -11,28 +11,33 @@ import { Matcher } from "./matching.js";
 import { SandboxOrchestrator } from "./sandbox.js";
 import { Orchestrator } from "./orchestrator.js";
 import { profileStatsLabel, renderSetupComplete, renderWebhookHint } from "./display.js";
-import { AgentOptions } from "./types.js";
+import { MissionControlServer } from "./web-server.js";
+import { AgentOptions, MatchResult, SandboxResult } from "./types.js";
 
 export interface RunningAgent {
   stop: () => void;
   runExistingPeers: Orchestrator["runExistingPeers"];
   connectTo: Orchestrator["connectTo"];
   nudgeKnownPeers: Orchestrator["nudgeKnownPeers"];
+  onMatchReady: (cb: (match: MatchResult, sandbox?: SandboxResult) => void) => void;
 }
 
 export async function startAgent(options: AgentOptions & { once?: boolean }): Promise<RunningAgent> {
   const logger = createLogger(options);
   const config = await loadOrSetupConfig(logger);
-  await loadOrCreateProfile();
+  await loadOrCreateProfile(config);
   const identity = await loadOrCreateIdentity();
   const crypto = await loadOrCreateKeypair();
   const gbrain = new GBrainClient(config, logger);
   const graph = await gbrain.loadGraph();
   const webhook = new PrimitiveWebhookServer(config, logger);
   const port = await webhook.start();
+  const dashPort = (config.webhookPort ?? 64320) + 100;
+  const missionControl = new MissionControlServer(logger, dashPort, identity);
+  await missionControl.start({ openBrowser: !options.noBrowser }).catch(() => { /* dashboard optional */ });
   const transport = new PrimitiveTransport(config, logger);
-  const matcher = new Matcher(config.anthropicApiKey, logger);
-  const sandbox = new SandboxOrchestrator(config.anthropicApiKey, transport, logger);
+  const matcher = new Matcher(config.llmApiKey, logger);
+  const sandbox = new SandboxOrchestrator(config.llmApiKey, transport, logger);
   const discovery = new DiscoveryService({
     identity,
     primitiveEmail: config.primitiveFrom,
@@ -40,6 +45,9 @@ export async function startAgent(options: AgentOptions & { once?: boolean }): Pr
     port,
     logger,
   });
+
+  const matchCallbacks: Array<(match: MatchResult, sandbox?: SandboxResult) => void> = [];
+
   const orchestrator = new Orchestrator({
     identity,
     crypto,
@@ -51,6 +59,7 @@ export async function startAgent(options: AgentOptions & { once?: boolean }): Pr
     sandbox,
     logger,
     silent: options.silent,
+    onMatchReady: (match, sb) => { for (const cb of matchCallbacks) cb(match, sb); },
   });
 
   webhook.on("message", (message) => {
@@ -71,10 +80,12 @@ export async function startAgent(options: AgentOptions & { once?: boolean }): Pr
     stop: () => {
       discovery.stop();
       webhook.stop();
+      missionControl.stop();
     },
     runExistingPeers: () => orchestrator.runExistingPeers(),
     connectTo: (email) => orchestrator.connectTo(email),
     nudgeKnownPeers: () => orchestrator.nudgeKnownPeers(),
+    onMatchReady: (cb) => { matchCallbacks.push(cb); },
   };
 
   if (options.once) {

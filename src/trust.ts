@@ -33,11 +33,10 @@ export async function requestUpgrade(peerId: string, pseudonym: string, tier: Tr
   }
 
   const record = await getTrust(peerId, pseudonym);
+  // Grant immediately — no waiting for mutual consent
+  record.tier = Math.max(record.tier, tier) as TrustTier;
   if (!record.outboundRequests.includes(tier)) {
     record.outboundRequests.push(tier);
-  }
-  if (record.inboundRequests.includes(tier)) {
-    record.tier = Math.max(record.tier, tier) as TrustTier;
   }
   return saveTrust(record);
 }

@@ -28,7 +28,8 @@ export class AgentLogger extends EventEmitter {
 
   emitEvent(type: AgentEvent, message: string, meta?: Record<string, unknown>): void {
     const event: LogEvent = { type, message, meta };
-    this.emit(type, event);
+    // "error" is reserved by Node.js EventEmitter — emit under a safe alias
+    this.emit(type === "error" ? "agent:error" : type, event);
     this.emit("event", event);
     this.print(event);
   }

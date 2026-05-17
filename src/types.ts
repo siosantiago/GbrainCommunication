@@ -5,7 +5,7 @@ export interface AgentConfig {
   primitiveApiKey: string;
   primitiveFrom: string;
   primitiveWebhookSecret?: string;
-  anthropicApiKey?: string;
+  llmApiKey?: string;
   gbrainBaseUrl?: string;
   webhookPort?: number;
 }
@@ -155,4 +155,5 @@ export interface AgentOptions {
   silent: boolean;
   logs: boolean;
   simulateCount?: number;
+  noBrowser?: boolean;
 }

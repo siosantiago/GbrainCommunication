@@ -27,7 +27,7 @@ export class PrimitiveTransport {
       .update(`${this.config.primitiveFrom}:${input.to}:${input.subject}:${input.bodyText}`)
       .digest("hex");
 
-    if (this.isDryRun()) {
+    if (this.isDryRun() || input.to.endsWith(".example")) {
       this.logger.debug(`Dry-run Primitive send to ${input.to}: ${input.subject}`);
       return { id: idempotencyKey.slice(0, 16), deliveryStatus: "dry_run" };
     }

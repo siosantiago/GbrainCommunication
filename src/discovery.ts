@@ -25,7 +25,7 @@ export class DiscoveryService extends EventEmitter {
 
   async start(): Promise<void> {
     this.bonjour = new Bonjour();
-    this.bonjour.publish({
+    const svc = this.bonjour.publish({
       name: `gbrain-${this.options.identity.pseudonym.replace("#", "")}`,
       type: "gbrain",
       protocol: "tcp",
@@ -36,6 +36,10 @@ export class DiscoveryService extends EventEmitter {
         publicKey: this.options.publicKey,
         version: "1",
       },
+    });
+    // bonjour throws if the exact name is already on the network (e.g. quick restart)
+    svc.on("error", (err: Error) => {
+      this.options.logger.debug(`mDNS publish: ${err.message} — still listening for peers`);
     });
 
     const browser = this.bonjour.find({ type: "gbrain", protocol: "tcp" });
@@ -78,7 +82,7 @@ export class DiscoveryService extends EventEmitter {
       port: service.port,
       firstSeenAt: new Date().toISOString(),
       lastSeenAt: new Date().toISOString(),
-      source: "mdns",
+      source: txt.simulated === "true" ? "simulated" : "mdns",
     };
 
     const peers = await readJson<Record<string, Peer>>(peersFile, {});
