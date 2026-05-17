@@ -40,28 +40,6 @@ export ANTHROPIC_API_KEY=sk-ant-...   # or OPENAI_API_KEY=sk-proj-...
 export GBRAIN_WEBHOOK_PORT=64320      # port ngrok/localtunnel will forward to
 ```
 
----
-
-## Two-agent demo on one machine
-
-The full handshake → score → sandbox loop, entirely local:
-
-```bash
-# Terminal 1 — primary agent
-node dist/cli.js start
-
-# Terminal 2 — second agent (isolated state directory)
-GBRAIN_STATE_DIR=$(pwd)/state2 GBRAIN_WEBHOOK_PORT=64321 node dist/cli.js start
-
-# Terminal 3 — 10 simulated peers, one every 5 seconds
-node dist/cli.js simulate --count 10 --stagger 5
-```
-
-Or run the all-in-one launcher that opens every window automatically:
-
-```bash
-./start-demo.sh
-```
 
 The launcher starts both agents, simulated peers, and two webhook tunnels, and prints the Mission Control dashboard URLs.
 
